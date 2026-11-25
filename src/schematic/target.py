@@ -86,6 +86,9 @@ class Results:
             raise MissingResultError("no scan yet: run `schematic scan` first")
         return StaticScan.model_validate_json(self.scan_file.read_bytes())
 
+    def has_recording(self) -> bool:
+        return self.recording_file.is_file()
+
     def recording(self) -> Recording:
         if not self.recording_file.is_file():
             raise MissingResultError("no recording yet: run `schematic record` first")

@@ -20,3 +20,7 @@ class MissingResultError(SchematicError):
 
 class TargetError(SchematicError):
     pass
+
+
+class UiMissingError(SchematicError):
+    pass

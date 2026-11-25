@@ -1,11 +1,15 @@
 import argparse
 import sys
+import webbrowser
 from collections.abc import Callable, Sequence
+from importlib.resources import files
 from pathlib import Path
 
 from schematic.board import Board
 from schematic.errors import SchematicError
 from schematic.routes import FastApiRoutes
+from schematic.server import SheetServer
+from schematic.sheets import Sheets
 from schematic.target import Results, Target
 from schematic.text import TextView
 from schematic.trace import FlowTrace, StaticTrace, flow_coverage
@@ -58,6 +62,22 @@ class Commands:
             raise SchematicError(f"no recorded flow is named {arguments.name!r}")
         return lines
 
+    def serve(self, arguments: argparse.Namespace) -> list[str]:
+        recording = self._results.recording() if self._results.has_recording() else None
+        server = SheetServer(
+            sheets=Sheets(board=self._board(), recording=recording), web=files("schematic.web"), port=0
+        )
+        sys.stdout.write(f"schematic serves {self._project} at {server.url} (Ctrl+C stops it)\n")
+        sys.stdout.flush()
+        webbrowser.open(server.url)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            return ["stopped"]
+        finally:
+            server.close()
+        return []
+
     def _board(self) -> Board:
         scan = self._results.scan()
         return Board(scan=scan, routes=FastApiRoutes(scan=scan))
@@ -79,6 +99,7 @@ def parser() -> argparse.ArgumentParser:
     verbs.add_parser("flows", help="list the recorded flows")
     flow = verbs.add_parser("flow", help="the path one recorded flow took, against the paths it may take")
     flow.add_argument("name", help="the flow's name, or its test id")
+    verbs.add_parser("serve", help="draw the sheets in the browser")
     return root
 
 
@@ -93,6 +114,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "record": commands.record,
         "flows": commands.flows,
         "flow": commands.flow,
+        "serve": commands.serve,
     }
     try:
         lines = verbs[arguments.verb](arguments)
