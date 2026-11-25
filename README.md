@@ -29,6 +29,19 @@ schematic flow "place an order"           # the path one flow took, against the 
 
 `schematic` is `.venv/bin/schematic` of this folder.
 
+## Draw
+
+```bash
+npm ci --prefix ui && npm run build --prefix ui   # once, and after a change in ui/
+schematic serve                                   # the sheets in the browser, on 127.0.0.1
+```
+
+The overview has a part per top-level module or package; click one to open its sheet. On a sheet, a part is a
+class with behaviour or a module, with one wire to each part it calls. Click a part to show its methods as rows,
+with each call at the method that makes it and the method it reaches. Select a flow to see the methods and calls
+that test ran; calls to other sheets and libraries are flags at the pins. The address keeps the sheet, the grouping,
+the expanded parts and the flow, so a view can be shared as a link.
+
 ## Flows
 
 A flow is a test. Mark it with the use case it plays, and give it the input data that picks the branch:
@@ -59,4 +72,5 @@ composition.
 
 ```bash
 uv run ruff check src tests && uv run ruff format --check src tests && uv run mypy && uv run pytest
+npm run check --prefix ui && npm test --prefix ui
 ```
