@@ -3,7 +3,21 @@ import pytest
 from schematic.board import Board
 from schematic.errors import UnknownNameError
 from schematic.recording import Recording
-from schematic.sheets import Call, FunctionRef, Inbound, Outbound, Part, PartKind, Role, Sheets, SheetSummary
+from schematic.scan import StaticScan
+from schematic.sheets import (
+    Call,
+    Collaborator,
+    FunctionRef,
+    Inbound,
+    Member,
+    Outbound,
+    Part,
+    PartDetail,
+    PartKind,
+    Role,
+    Sheets,
+    SheetSummary,
+)
 
 
 @pytest.fixture
@@ -11,14 +25,18 @@ def sheets(board: Board, recording: Recording) -> Sheets:
     return Sheets(board=board, recording=recording)
 
 
+def store_path(scan: StaticScan) -> str:
+    return next(module.path for module in scan.modules if module.name == "shop.store")
+
+
 def test_the_overview_has_a_part_per_top_level_module_and_a_wire_per_pair(sheets: Sheets) -> None:
     overview = sheets.sheet("shop")
     assert [part.id for part in overview.parts] == ["app", "errors", "ports", "store"]
-    assert overview.calls == (Call(source=0, source_method="", target=3, target_method="", count=3),)
+    assert overview.calls == (Call(source=0, source_method="", target=3, target_method="", count=3, lines=()),)
     assert {call.target for call in overview.outbound} == {"library:fastapi"}
 
 
-def test_a_sheet_has_its_parts_their_calls_and_the_calls_from_other_sheets(sheets: Sheets) -> None:
+def test_a_sheet_has_its_parts_their_calls_and_the_calls_from_other_sheets(sheets: Sheets, scan: StaticScan) -> None:
     store = sheets.sheet("store")
     assert store.parts == (
         Part(
@@ -27,6 +45,7 @@ def test_a_sheet_has_its_parts_their_calls_and_the_calls_from_other_sheets(sheet
             kind=PartKind.CLASS,
             role=Role.SERVICE,
             file="store.py",
+            path=store_path(scan),
             service="MemoryOrders",
             methods=("new", "place"),
         ),
@@ -36,11 +55,12 @@ def test_a_sheet_has_its_parts_their_calls_and_the_calls_from_other_sheets(sheet
             kind=PartKind.CLASS,
             role=Role.SERVICE,
             file="store.py",
+            path=store_path(scan),
             service="SystemClock",
             methods=("now", "new"),
         ),
     )
-    assert store.calls == (Call(source=0, source_method="place", target=1, target_method="now", count=1),)
+    assert store.calls == (Call(source=0, source_method="place", target=1, target_method="now", count=1, lines=(20,)),)
     assert store.inbound == (
         Inbound(sheet="app", target=0, target_method="new", count=1),
         Inbound(sheet="app", target=0, target_method="place", count=1),
@@ -93,3 +113,37 @@ def test_without_a_recording_a_sheet_has_no_flows(board: Board) -> None:
 def test_an_unknown_sheet_is_refused(sheets: Sheets) -> None:
     with pytest.raises(UnknownNameError, match="no sheet 'basket'"):
         sheets.sheet("basket")
+
+
+def test_a_class_has_its_place_wiring_members_docstrings_and_raises(sheets: Sheets, scan: StaticScan) -> None:
+    assert sheets.part("store", 0) == PartDetail(
+        id="shop.store.MemoryOrders",
+        title="MemoryOrders",
+        kind=PartKind.CLASS,
+        role=Role.SERVICE,
+        path=store_path(scan),
+        line=12,
+        doc=None,
+        kinds=(),
+        implements=("shop.ports.Orders",),
+        built_with=(Collaborator(name="clock", type="shop.ports.Clock", parts=("shop.ports.Clock",)),),
+        held_by=(),
+        members=(
+            Member(name="new", line=13, doc=None),
+            Member(name="place", line=17, doc=None),
+            Member(name="_count", line=23, doc="Count every order placed so far."),
+        ),
+        raises=("shop.errors.EmptyItemError",),
+        types=(),
+    )
+
+
+def test_a_module_lists_its_own_functions_but_not_the_ones_nested_in_them(sheets: Sheets) -> None:
+    members = sheets.part("app", 0).members
+    assert [member.name for member in members] == ["orders", "caller_name", "place", "add_health_routes"]
+    assert members[3].doc == "Add a health route under `path`."
+
+
+def test_a_part_outside_the_sheet_is_refused(sheets: Sheets) -> None:
+    with pytest.raises(UnknownNameError, match="no part 2 on sheet 'store'"):
+        sheets.part("store", 2)

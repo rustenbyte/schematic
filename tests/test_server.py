@@ -59,6 +59,11 @@ def test_a_sheet_and_its_flows_are_served(server: SheetServer) -> None:
     assert len(flows["flows"]) == 4
 
 
+def test_the_details_of_a_part_are_served(server: SheetServer) -> None:
+    detail = json.loads(get(server, "api/sheets/store/parts/0")[2])
+    assert (detail["title"], detail["implements"]) == ("MemoryOrders", ["shop.ports.Orders"])
+
+
 def test_an_unknown_sheet_answers_404(server: SheetServer) -> None:
     status, _, body = get(server, "api/sheets/basket")
     assert (status, json.loads(body)) == (404, {"detail": "no sheet 'basket'"})

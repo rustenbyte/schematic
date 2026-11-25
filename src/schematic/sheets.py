@@ -1,6 +1,6 @@
 import sys
 from collections import Counter, defaultdict
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from enum import StrEnum
 from pathlib import Path
 
@@ -49,11 +49,53 @@ class Part(BaseModel):
     kind: PartKind
     role: Role
     file: str
+    path: str
     service: str
     methods: tuple[str, ...]
 
 
+class Collaborator(BaseModel):
+    """A constructor parameter of a class, with the parts its type names."""
+
+    model_config = FROZEN
+
+    name: str
+    type: str
+    parts: tuple[str, ...]
+
+
+class Member(BaseModel):
+    model_config = FROZEN
+
+    name: str
+    line: int
+    doc: str | None
+
+
+class PartDetail(BaseModel):
+    """What a sheet does not draw about one part: where it is, how it is built and held, all its members."""
+
+    model_config = FROZEN
+
+    id: str
+    title: str
+    kind: PartKind
+    role: Role
+    path: str
+    line: int | None
+    doc: str | None
+    kinds: tuple[ClassKind, ...]
+    implements: tuple[str, ...]
+    built_with: tuple[Collaborator, ...]
+    held_by: tuple[str, ...]
+    members: tuple[Member, ...]
+    raises: tuple[str, ...]
+    types: tuple[str, ...]
+
+
 class Call(BaseModel):
+    """Calls from one method to another; `lines` are where they stand in the source part's file."""
+
     model_config = FROZEN
 
     source: int
@@ -61,6 +103,7 @@ class Call(BaseModel):
     target: int
     target_method: str
     count: int
+    lines: tuple[int, ...]
 
 
 class Inbound(BaseModel):
@@ -108,6 +151,7 @@ class SheetIndex(BaseModel):
     model_config = FROZEN
 
     project: str
+    root: str
     overview: str
     sheets: tuple[SheetSummary, ...]
 
@@ -158,6 +202,8 @@ class Sheets:
         scan = board.scan
         self._classes = {found.fullname: found for found in scan.classes}
         self._modules = {module.name: Path(module.path).name for module in scan.modules}
+        self._paths = {module.name: module.path for module in scan.modules}
+        self._docs = {module.name: module.doc for module in scan.modules}
         self._lines = {function.fullname: function.line for function in scan.functions}
         self._callers = (*(function.fullname for function in scan.functions), *sorted(self._modules))
         self._targets = {caller: tuple(self._resolve(caller)) for caller in self._callers}
@@ -171,7 +217,7 @@ class Sheets:
     def index(self) -> SheetIndex:
         summaries = [SheetSummary(id=self.overview, title=self.overview, parts=len(self._ids))]
         summaries.extend(SheetSummary(id=found, title=found, parts=len(self.sheet(found).parts)) for found in self._ids)
-        return SheetIndex(project=self.overview, overview=self.overview, sheets=tuple(summaries))
+        return SheetIndex(project=self.overview, root=self._root(), overview=self.overview, sheets=tuple(summaries))
 
     def sheet(self, sheet_id: str) -> Sheet:
         if sheet_id == self.overview:
@@ -201,6 +247,65 @@ class Sheets:
         ]
         return SheetFlows(functions=table.functions(), flows=tuple(paths))
 
+    def part(self, sheet_id: str, index: int) -> PartDetail:
+        parts = self.sheet(sheet_id).parts
+        if not 0 <= index < len(parts):
+            raise UnknownNameError(f"no part {index} on sheet {sheet_id!r}")
+        part = parts[index]
+        if part.kind is PartKind.PACKAGE:
+            return PartDetail(
+                id=part.id,
+                title=part.title,
+                kind=part.kind,
+                role=part.role,
+                path=part.path,
+                line=None,
+                doc=self._docs.get(f"{self.overview}.{part.id}"),
+                kinds=(),
+                implements=(),
+                built_with=(),
+                held_by=(),
+                members=(),
+                raises=(),
+                types=(),
+            )
+        functions = sorted(
+            (
+                f
+                for f in self._board.scan.functions
+                if outer(f.fullname) == f.fullname and self.part_of(f.fullname) == part.id
+            ),
+            key=lambda f: f.line,
+        )
+        raises = sorted(
+            {
+                link.via
+                for function in functions
+                for link in self._board.links(function.fullname)
+                if link.kind is LinkKind.RAISE and link.via is not None
+            }
+        )
+        found = self._classes.get(part.id)
+        return PartDetail(
+            id=part.id,
+            title=part.title,
+            kind=part.kind,
+            role=part.role,
+            path=part.path,
+            line=found.line if found is not None else None,
+            doc=found.doc if found is not None else self._docs.get(part.id),
+            kinds=found.kinds if found is not None else (),
+            implements=self._board.protocols_of(part.id),
+            built_with=tuple(
+                Collaborator(name=wire.name, type=wire.type, parts=wire.components)
+                for wire in (self._board.wires(part.id) if found is not None else ())
+            ),
+            held_by=tuple(f"{holder.component}.{holder.wire.name}" for holder in self._board.holders(part.id)),
+            members=tuple(Member(name=self.member(part.id, f.fullname), line=f.line, doc=f.doc) for f in functions),
+            raises=tuple(raises),
+            types=tuple(c.fullname for c in self._board.scan.classes if c.module == part.id and not behaves(c)),
+        )
+
     def sheet_of(self, name: str) -> str:
         parts = self.module_of(outer(name)).split(".")
         return parts[1] if len(parts) > 1 else ROOT_SHEET
@@ -224,17 +329,17 @@ class Sheets:
         label = name[len(part) + 1 :] if name.startswith(f"{part}.") else name.rpartition(".")[2]
         return BUILD if label == "__init__" else label
 
-    def _resolve(self, caller: str) -> Iterator[tuple[str, str]]:
+    def _resolve(self, caller: str) -> Iterator[tuple[str, str, int | None]]:
         for link in self._board.links(caller):
             if link.kind in (LinkKind.VALUE, LinkKind.TERMINAL):
                 continue
             if link.kind in (LinkKind.CONSTRUCT, LinkKind.RAISE):
                 built = self._classes.get(link.via or "")
                 if built is not None and behaves(built):
-                    yield built.fullname, BUILD
+                    yield built.fullname, BUILD, link.line
                 continue
             part = self.part_of(link.target)
-            yield part, self.member(part, link.target)
+            yield part, self.member(part, link.target), link.line
 
     def _libraries_of(self, caller: str) -> Iterator[str]:
         for link in self._board.links(caller):
@@ -243,7 +348,7 @@ class Sheets:
                 yield library
 
     def _package_sheet(self, sheet_id: str) -> Sheet:
-        calls: Counter[tuple[str, str, str, str]] = Counter()
+        calls: dict[tuple[str, str, str, str], list[int | None]] = defaultdict(list)
         inbound: Counter[tuple[str, str, str]] = Counter()
         outbound: Counter[tuple[str, str, str]] = Counter()
         for caller in self._callers:
@@ -253,10 +358,10 @@ class Sheets:
             if source_sheet == sheet_id:
                 for library in self._libraries[caller]:
                     outbound[(source, source_method, f"library:{library}")] += 1
-            for target, target_method in self._targets[caller]:
+            for target, target_method, line in self._targets[caller]:
                 target_sheet = self.sheet_of(target)
                 if source_sheet == sheet_id == target_sheet and target != source:
-                    calls[(source, source_method, target, target_method)] += 1
+                    calls[(source, source_method, target, target_method)].append(line)
                 elif source_sheet == sheet_id != target_sheet:
                     outbound[(source, source_method, f"sheet:{target_sheet}")] += 1
                 elif target_sheet == sheet_id != source_sheet:
@@ -279,6 +384,7 @@ class Sheets:
                 kind=PartKind.CLASS if part in self._classes else PartKind.MODULE,
                 role=self._role(part),
                 file=self._modules[self.module_of(part)],
+                path=self._paths[self.module_of(part)],
                 service=services[part],
                 methods=tuple(sorted(methods[part], key=lambda method: (self._line(part, method), method))),
             )
@@ -289,8 +395,15 @@ class Sheets:
             title=sheet_id,
             parts=parts,
             calls=tuple(
-                Call(source=index[s], source_method=sm, target=index[t], target_method=tm, count=n)
-                for (s, sm, t, tm), n in sorted(calls.items())
+                Call(
+                    source=index[s],
+                    source_method=sm,
+                    target=index[t],
+                    target_method=tm,
+                    count=len(lines),
+                    lines=tuple(sorted({line for line in lines if line is not None})),
+                )
+                for (s, sm, t, tm), lines in sorted(calls.items())
             ),
             inbound=tuple(
                 Inbound(sheet=sheet, target=index[t], target_method=tm, count=n)
@@ -312,7 +425,7 @@ class Sheets:
                 continue
             for library in self._libraries[caller]:
                 outbound[(source, f"library:{library}")] += 1
-            for target_part, _ in self._targets[caller]:
+            for target_part, _, _ in self._targets[caller]:
                 target = index.get(self.sheet_of(target_part))
                 if target is not None and target != source:
                     calls[(source, target)] += 1
@@ -320,11 +433,20 @@ class Sheets:
             id=self.overview,
             title=self.overview,
             parts=tuple(
-                Part(id=found, title=found, kind=PartKind.PACKAGE, role=Role.PACKAGE, file="", service="", methods=())
+                Part(
+                    id=found,
+                    title=found,
+                    kind=PartKind.PACKAGE,
+                    role=Role.PACKAGE,
+                    file="",
+                    path=self._paths.get(f"{self.overview}.{found}", ""),
+                    service="",
+                    methods=(),
+                )
                 for found in self._ids
             ),
             calls=tuple(
-                Call(source=s, source_method="", target=t, target_method="", count=n)
+                Call(source=s, source_method="", target=t, target_method="", count=n, lines=())
                 for (s, t), n in sorted(calls.items())
             ),
             inbound=(),
@@ -345,7 +467,11 @@ class Sheets:
         name = f"{part}.__init__" if method == BUILD else f"{part}.{method}"
         return self._lines.get(name, sys.maxsize)
 
-    def _services(self, ids: list[str], calls: Counter[tuple[str, str, str, str]]) -> dict[str, str]:
+    def _root(self) -> str:
+        """The folder that holds the package: the parent of the package's own directory."""
+        return str(Path(self._paths[self.overview]).parent.parent)
+
+    def _services(self, ids: list[str], calls: Iterable[tuple[str, str, str, str]]) -> dict[str, str]:
         """Group each part under the one service that reaches it, or mark it as shared or reached directly."""
         onward: dict[str, set[str]] = defaultdict(set)
         for source, _, target, _ in calls:

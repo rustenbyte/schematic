@@ -86,6 +86,8 @@ class SheetRequests(BaseHTTPRequestHandler):
                 return self._sheets.sheet(sheet_id)
             case ["api", "sheets", sheet_id, "flows"]:
                 return self._sheets.flows(sheet_id)
+            case ["api", "sheets", sheet_id, "parts", index] if index.isdigit():
+                return self._sheets.part(sheet_id, int(index))
         return None
 
     def _send(self, status: HTTPStatus, content_type: str, body: bytes) -> None:
