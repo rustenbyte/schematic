@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 import sys
@@ -50,7 +51,7 @@ class MemoryOrders:
 }
 
 
-def git(root: Path, *arguments: str) -> None:
+def git(root: Path, *arguments: str, when: str = "2026-01-01T12:00:00+00:00") -> None:
     command = [
         shutil.which("git") or "git",
         "-c",
@@ -59,7 +60,8 @@ def git(root: Path, *arguments: str) -> None:
         "user.email=test@example.invalid",
         *arguments,
     ]
-    subprocess.run(command, cwd=root, check=True, capture_output=True)
+    dates = {"GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when}
+    subprocess.run(command, cwd=root, check=True, capture_output=True, env={**os.environ, **dates})
 
 
 @pytest.fixture(scope="session")
@@ -74,7 +76,7 @@ def repository(sample: Path, tmp_path_factory: pytest.TempPathFactory) -> Path:
         (root / name).write_text(text.lstrip(), encoding="utf-8")
     app = root / "src/shop/app.py"
     app.write_text(app.read_text(encoding="utf-8").replace("SystemClock", "UtcClock"), encoding="utf-8")
-    git(root, "commit", "-q", "-am", "Note each order")
+    git(root, "commit", "-q", "-am", "Note each order", when="2026-02-01T12:00:00+00:00")
     git(root, "tag", "v2")
     return root
 
