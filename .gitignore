@@ -8,3 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+
+# UI build
+ui/node_modules/
+src/schematic/web/app.js

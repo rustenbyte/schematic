@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>schematic</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Mona+Sans:wdth,wght@75..125,200..900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="bar">
+  <span class="mark">
+    <svg width="20" height="16" viewBox="0 0 20 16" aria-hidden="true"><rect x="4" y="1.5" width="12" height="13" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 1.5 A2 2 0 0 0 12 1.5" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M0 5h4M0 8h4M0 11h4M16 5h4M16 8h4M16 11h4" stroke="currentColor" stroke-width="1.2"/></svg>
+    schematic
+  </span>
+  <nav class="crumbs" id="crumbs" aria-label="Sheet path"></nav>
+  <div class="sheet-controls" id="sheet-controls">
+    <div class="control">Group by
+      <div class="segmented" role="group" aria-label="Group by">
+        <button data-grouping="none" aria-pressed="true">None</button>
+        <button data-grouping="role" aria-pressed="false">Roles</button>
+        <button data-grouping="file" aria-pressed="false">Files</button>
+        <button data-grouping="service" aria-pressed="false">Services</button>
+      </div>
+    </div>
+    <button class="ghost" id="expand-all">Expand all</button>
+    <button class="ghost" id="collapse-all">Collapse all</button>
+  </div>
+  <div class="figures" id="figures"></div>
+</header>
+<aside class="rail">
+  <h2>Sheets</h2>
+  <ol class="sheet-list" id="sheets"></ol>
+  <div class="flows">
+    <h2><span id="flows-heading">Flows</span><button id="clear-flow" hidden>Clear</button></h2>
+    <input id="filter" type="search" aria-labelledby="flows-heading" placeholder="Filter">
+    <div class="flow-groups" id="flows"></div>
+  </div>
+</aside>
+<main class="stage" id="stage">
+  <svg id="drawing" aria-label="Sheet"></svg>
+  <div class="zoom" role="group" aria-label="Zoom">
+    <button id="zoom-out" aria-label="Zoom out">−</button>
+    <button id="zoom-fit">Fit</button>
+    <button id="zoom-in" aria-label="Zoom in">+</button>
+  </div>
+  <p class="notice" id="notice" role="alert" hidden></p>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>
