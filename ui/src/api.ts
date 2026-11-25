@@ -160,3 +160,37 @@ export async function fetchJson<T>(path: string): Promise<T> {
   const body: T = await response.json();
   return body;
 }
+
+export interface Field {
+  readonly name: string;
+  readonly type: string;
+}
+
+export interface DataType {
+  readonly id: string;
+  readonly title: string;
+  readonly kinds: readonly string[];
+  readonly doc: string | null;
+  readonly data: boolean;
+  readonly fields: readonly Field[];
+}
+
+export interface Parameter {
+  readonly name: string;
+  readonly kind: string;
+  readonly type: string;
+  readonly types: readonly string[];
+}
+
+export interface Signature {
+  readonly function: string;
+  readonly parameters: readonly Parameter[];
+  readonly returns: string;
+  readonly return_types: readonly string[];
+  readonly doc: string | null;
+}
+
+export interface CallData {
+  readonly signatures: readonly Signature[];
+  readonly types: readonly DataType[];
+}

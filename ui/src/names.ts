@@ -19,3 +19,10 @@ export function shortName(project: string, name: string): string {
 export function relativePath(root: string, path: string): string {
   return path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
 }
+
+/** A qualified name inside a type, such as `cdtwee.cm.commits.Change` in `tuple[cdtwee.cm.commits.Change, ...]`. */
+export const QUALIFIED = /\b(?:[A-Za-z_]\w*\.)+[A-Za-z_]\w*\b/g;
+
+export function lastName(qualified: string): string {
+  return qualified.slice(qualified.lastIndexOf(".") + 1);
+}

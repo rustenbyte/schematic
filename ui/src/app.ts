@@ -1,4 +1,5 @@
 import type {
+  CallData,
   ComparisonIndex,
   FlowPath,
   PartDetail,
@@ -11,11 +12,11 @@ import type {
 } from "./api.ts";
 import { fetchJson } from "./api.ts";
 import { Inspector } from "./inspector.ts";
-import type { PanelContext } from "./inspector.ts";
+import type { PanelContext, WireData } from "./inspector.ts";
 import { LayoutEngine } from "./layout.ts";
 import { Panels } from "./panels.ts";
 import type { Drawing, Grouping, Point, ViewState, Wire } from "./model.ts";
-import { at, drawing, elkGraph, wireKey } from "./model.ts";
+import { at, combine, drawing, elkGraph, wireKey } from "./model.ts";
 import { readableTest } from "./names.ts";
 import { Theme } from "./theme.ts";
 import { SheetView } from "./view.ts";
@@ -302,7 +303,12 @@ class App {
     }
     const wire: Wire | undefined = selection !== null && "wire" in selection ? d.wires.find((w) => wireKey(w) === selection.wire) : undefined;
     if (wire !== undefined) {
-      this.inspector.showWire(context, wire);
+      this.inspector.showWire(context, wire, null);
+      this.go(this.carried(wire).then((data) => {
+        if (asked === this.asked) {
+          this.inspector.showWire(context, wire, data);
+        }
+      }));
       return;
     }
     if (this.flow !== null) {
@@ -320,6 +326,31 @@ class App {
     const detail = fetchJson<PartDetail>(`/api/states/${part(shownIn)}/parts/${id}`);
     const before = status === "changed" && this.base !== null ? fetchJson<PartDetail>(`/api/states/${part(this.base)}/parts/${id}`) : Promise.resolve(null);
     return Promise.all([detail, before]);
+  }
+
+  /** What each call on a wire carries, read from the state that has the call: the base state for a removed one. */
+  private async carried(wire: Wire): Promise<WireData> {
+    const parts = this.sheet?.parts ?? [];
+    const requests = wire.calls.map((call, i) => ({
+      index: i,
+      call: call.target_method ? `${at(parts, call.target).id}|${call.target_method}` : null,
+      state: wire.statuses[i] === "removed" && this.base !== null ? this.base : this.head,
+    }));
+    const signatures: WireData["signatures"][number][] = wire.calls.map(() => null);
+    const types = new Map<string, CallData["types"][number]>();
+    for (const state of new Set(requests.map((request) => request.state))) {
+      const asked = requests.filter((request) => request.state === state && request.call !== null);
+      if (asked.length === 0) {
+        continue;
+      }
+      const query = asked.map((request) => `call=${encodeURIComponent(request.call ?? "")}`).join("&");
+      const data = await fetchJson<CallData>(`/api/states/${part(state)}/data?${query}`);
+      asked.forEach((request, n) => { signatures[request.index] = data.signatures[n] ?? null; });
+      for (const found of data.types) {
+        types.set(found.id, found);
+      }
+    }
+    return { signatures, types: [...types.values()] };
   }
 
   private onPart(index: number): void {

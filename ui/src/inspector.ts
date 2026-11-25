@@ -1,7 +1,7 @@
-import type { FlowPath, Part, PartDetail, Sheet, SheetComparison, SheetIndex, State, Status } from "./api.ts";
+import type { DataType, FlowPath, Part, PartDetail, Sheet, SheetComparison, SheetIndex, Signature, State, Status } from "./api.ts";
 import type { Drawing, Wire } from "./model.ts";
 import { at, combine, flagLabel, reference } from "./model.ts";
-import { readableTest, relativePath, shortName } from "./names.ts";
+import { QUALIFIED, lastName, readableTest, relativePath, shortName } from "./names.ts";
 
 export interface PanelContext {
   readonly index: SheetIndex;
@@ -20,6 +20,12 @@ const STATUS_NAMES: Readonly<Record<Status, string>> = { same: "", added: "Added
 function count(statuses: readonly Status[], wanted: Status): Fact {
   const found = statuses.filter((status) => status === wanted).length;
   return [STATUS_NAMES[wanted], String(found), found ? wanted : ""];
+}
+
+/** What the calls on a wire carry, one signature per call of the wire, and the classes they are made of. */
+export interface WireData {
+  readonly signatures: readonly (Signature | null)[];
+  readonly types: readonly DataType[];
 }
 
 export interface PanelEvents {
@@ -178,15 +184,22 @@ export class Inspector {
     );
   }
 
-  showWire(c: PanelContext, wire: Wire): void {
+  showWire(c: PanelContext, wire: Wire, data: WireData | null): void {
     const source = at(c.sheet.parts, wire.source);
     const target = at(c.sheet.parts, wire.target);
-    const rows = wire.calls.map((call, i) => {
+    const types = new Map((data?.types ?? []).map((found) => [found.id, found]));
+    const calls = wire.calls.map((call, i) => {
       const status = wire.statuses[i] ?? "same";
-      return [
-        node("code", [`${status === "added" ? "+ " : status === "removed" ? "− " : ""}${call.source_method && call.target_method ? `${call.source_method} → ${call.target_method}` : `${source.title} → ${target.title}`}`], status),
-        node("span", [call.lines.length ? "" : `×${call.count}`, ...call.lines.flatMap((line, n) => [n ? " " : "", this.link(c, source.path, line, `:${line}`)])], "n"),
-      ];
+      const mark = status === "added" ? "+ " : status === "removed" ? "− " : "";
+      const name = call.source_method && call.target_method ? `${call.source_method} → ${call.target_method}` : `${source.title} → ${target.title}`;
+      const signature = data?.signatures[i] ?? null;
+      return node("li", [
+        node("div", [
+          node("code", [`${mark}${name}`], status),
+          node("span", [call.lines.length ? "" : `×${call.count}`, ...call.lines.flatMap((line, n) => [n ? " " : "", this.link(c, source.path, line, `:${line}`)])], "n"),
+        ], "call-head"),
+        signature === null ? null : this.carries(signature, types, c),
+      ], "call");
     });
     const status = combine(wire.statuses);
     const marks: Mark[] = [
@@ -194,16 +207,79 @@ export class Inspector {
       ...(status !== "same" ? [{ text: STATUS_NAMES[status], kind: status }] : []),
       ...(wire.lit > 0 ? [{ text: `${wire.lit} calls in this flow`, kind: "current" }] : []),
     ];
+    const total = wire.calls.reduce((sum, call) => sum + call.count, 0);
     this.replace(
       this.head(marks, `${source.title} to ${target.title}`, null),
-      rows.length
-        ? this.section(`Calls (${wire.calls.reduce((sum, call) => sum + call.count, 0)})`, this.list(rows, "calls"))
+      calls.length
+        ? this.section(`Calls (${total})`, node("ul", calls, "wire-calls"))
         : node("p", ["Recorded in this flow; the scan does not resolve these calls."], "quiet"),
+      calls.length && data === null && wire.calls.some((call) => call.target_method) ? node("p", ["Loading what the calls carry"], "quiet") : null,
+      data !== null && data.types.length ? this.section("Data types", node("div", data.types.map((found) => this.typeCard(found, types, c)), "types")) : null,
       node("div", [
         this.button(`${reference(source, wire.source)} ${source.title}`, () => this.events.selectPart(wire.source), "button"),
         this.button(`${reference(target, wire.target)} ${target.title}`, () => this.events.selectPart(wire.target), "button"),
       ], "actions"),
     );
+  }
+
+  /** What one call carries: its parameters along the wire, and its return value back. */
+  private carries(signature: Signature, types: ReadonlyMap<string, DataType>, c: PanelContext): HTMLElement {
+    const sends = signature.parameters.length
+      ? signature.parameters.map((parameter) => node("span", [node("b", [parameter.name]), " ", this.typeText(parameter.type, types, c)], "param"))
+      : [node("span", ["nothing"], "none")];
+    const back = signature.returns === "None" ? node("span", ["nothing"], "none") : this.typeText(signature.returns, types, c);
+    return node("dl", [
+      node("dt", ["Sends"]), node("dd", sends),
+      node("dt", ["Returns"]), node("dd", [back]),
+    ], "carries");
+  }
+
+  /** A type as text, with each class of the package in it as a link to its card. */
+  private typeText(text: string, types: ReadonlyMap<string, DataType>, c: PanelContext): HTMLElement {
+    const box = node("span", [], "type");
+    let last = 0;
+    for (const match of text.matchAll(QUALIFIED)) {
+      const at = match.index;
+      box.append(text.slice(last, at));
+      const name = match[0];
+      const found = types.get(name);
+      box.append(found === undefined ? node("span", [lastName(name)]) : this.typeLink(found));
+      last = at + name.length;
+    }
+    box.append(text.slice(last));
+    box.title = shortName(c.index.project, text);
+    return box;
+  }
+
+  private typeLink(found: DataType): HTMLButtonElement {
+    return this.button(found.title, () => {
+      const card = this.box.querySelector<HTMLDetailsElement>(`details[data-type="${CSS.escape(found.id)}"]`);
+      if (card !== null) {
+        card.open = true;
+        card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        card.classList.remove("flash");
+        void card.offsetWidth;
+        card.classList.add("flash");
+      }
+    }, `type-link${found.data ? "" : " part-link"}`);
+  }
+
+  private typeCard(found: DataType, types: ReadonlyMap<string, DataType>, c: PanelContext): HTMLDetailsElement {
+    const kind = found.kinds[0] ?? (found.data ? "data" : "part");
+    const card = node("details", [
+      node("summary", [node("span", [found.title], "type-title"), node("span", [found.data ? kind : found.kinds.includes("protocol") ? "protocol" : "part"], "mark-chip")]),
+      node("div", [shortName(c.index.project, found.id)], "type-id"),
+      found.doc ? node("p", [firstParagraph(found.doc)], "type-doc") : null,
+      found.fields.length
+        ? node("div", [
+            node("h4", [found.data ? "Fields" : "Built with"]),
+            node("div", found.fields.flatMap((field) => [node("span", [field.name], "name"), this.typeText(field.type, types, c)]), "pairs"),
+          ])
+        : null,
+    ], "type-card");
+    card.dataset["type"] = found.id;
+    card.open = found.data;
+    return card;
   }
 
   private changes(c: PanelContext, index: number, before: PartDetail | null): HTMLElement | null {
