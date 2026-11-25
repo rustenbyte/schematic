@@ -35,6 +35,8 @@ class Orders(Protocol):
     "src/shop/errors.py": """
 \"\"\"What the shop refuses to do.\"\"\"
 
+from dataclasses import dataclass
+
 
 class ShopError(Exception):
     \"\"\"A refusal, with the reason in its message.\"\"\"
@@ -45,6 +47,18 @@ class ShopError(Exception):
 
 class EmptyItemError(ShopError):
     pass
+
+
+@dataclass(frozen=True)
+class Refusal:
+    \"\"\"What a refused order was, and why.\"\"\"
+
+    item: str
+    reason: str
+
+
+def refusal(item: str, reason: str) -> Refusal:
+    return Refusal(item=item, reason=reason)
 """,
     "src/shop/store.py": """
 from datetime import UTC, datetime

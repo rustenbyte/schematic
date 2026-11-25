@@ -1,6 +1,6 @@
 import sys
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from enum import StrEnum
 from pathlib import Path
 
@@ -9,12 +9,16 @@ from pydantic import BaseModel
 from schematic.board import Board, LinkKind
 from schematic.errors import UnknownNameError
 from schematic.recording import Recording
-from schematic.scan import FROZEN, ClassKind, ClassScan
+from schematic.scan import FROZEN, ClassKind, ClassScan, ParamKind
 
 VALUE_KINDS = frozenset(
     {ClassKind.PYDANTIC, ClassKind.ENUM, ClassKind.EXCEPTION, ClassKind.NAMEDTUPLE, ClassKind.PROTOCOL}
 )
 STANDARD_LIBRARY = frozenset(sys.stdlib_module_names) | {"builtins"}
+DATA_KINDS = frozenset(
+    {ClassKind.PYDANTIC, ClassKind.DATACLASS, ClassKind.NAMEDTUPLE, ClassKind.ENUM, ClassKind.EXCEPTION}
+)
+SHAPELESS_KINDS = frozenset({ClassKind.ENUM, ClassKind.PROTOCOL})
 MODULE_SCOPE = "<module>"
 BUILD = "new"
 ROOT_SHEET = "__init__"
@@ -185,6 +189,60 @@ class SheetFlows(BaseModel):
     flows: tuple[FlowPath, ...]
 
 
+class Field(BaseModel):
+    model_config = FROZEN
+
+    name: str
+    type: str
+
+
+class DataType(BaseModel):
+    """A class of the package that a call sends or returns.
+
+    `data` marks a value class (a model, dataclass, named tuple, enum or exception), whose fields are listed and
+    followed; a part or a Protocol is named without its insides.
+    """
+
+    model_config = FROZEN
+
+    id: str
+    title: str
+    kinds: tuple[ClassKind, ...]
+    doc: str | None
+    data: bool
+    fields: tuple[Field, ...]
+
+
+class Parameter(BaseModel):
+    """One parameter of a call; `types` are the package's classes its type names."""
+
+    model_config = FROZEN
+
+    name: str
+    kind: ParamKind
+    type: str
+    types: tuple[str, ...]
+
+
+class Signature(BaseModel):
+    """What a call sends (its parameters) and what comes back (its return type)."""
+
+    model_config = FROZEN
+
+    function: str
+    parameters: tuple[Parameter, ...]
+    returns: str
+    return_types: tuple[str, ...]
+    doc: str | None
+
+
+class CallData(BaseModel):
+    model_config = FROZEN
+
+    signatures: tuple[Signature, ...]
+    types: tuple[DataType, ...]
+
+
 def behaves(found: ClassScan | None) -> bool:
     return found is not None and not (set(found.kinds) & VALUE_KINDS)
 
@@ -205,6 +263,7 @@ class Sheets:
         self._paths = {module.name: module.path for module in scan.modules}
         self._docs = {module.name: module.doc for module in scan.modules}
         self._lines = {function.fullname: function.line for function in scan.functions}
+        self._functions = {function.fullname: function for function in scan.functions}
         self._callers = (*(function.fullname for function in scan.functions), *sorted(self._modules))
         self._targets = {caller: tuple(self._resolve(caller)) for caller in self._callers}
         self._libraries = {caller: tuple(self._libraries_of(caller)) for caller in self._callers}
@@ -316,6 +375,34 @@ class Sheets:
             raises=tuple(raises),
             types=tuple(c.fullname for c in self._board.scan.classes if c.module == part_id and not behaves(c)),
         )
+
+    def data(self, calls: Sequence[str]) -> CallData:
+        """The data that calls move, each named `<part>|<method>`, with every class of the package it is made of.
+
+        A construction (`new`) sends the class's constructor parameters, also generated or inherited ones, and
+        returns the class.
+        """
+        signatures = [self._signature(*call.partition("|")[::2]) for call in calls]
+        pending = [ref for signature in signatures for ref in self._sent(signature)]
+        types: dict[str, DataType] = {}
+        while pending:
+            ref = pending.pop(0)
+            if ref in types:
+                continue
+            found_class = self._classes[ref]
+            data = bool(set(found_class.kinds) & DATA_KINDS)
+            shapeless = bool(set(found_class.kinds) & SHAPELESS_KINDS)
+            types[ref] = DataType(
+                id=ref,
+                title=ref.rpartition(".")[2],
+                kinds=found_class.kinds,
+                doc=found_class.doc,
+                data=data,
+                fields=() if shapeless else tuple(Field(name=p.name, type=p.type.text) for p in found_class.init),
+            )
+            if data and not shapeless:
+                pending.extend(ref for p in found_class.init for ref in self._known(p.type.refs))
+        return CallData(signatures=tuple(signatures), types=tuple(types.values()))
 
     def sheet_of(self, name: str) -> str:
         parts = self.module_of(outer(name)).split(".")
@@ -477,6 +564,44 @@ class Sheets:
             return 0
         name = f"{part}.__init__" if method == BUILD else f"{part}.{method}"
         return self._lines.get(name, sys.maxsize)
+
+    def _signature(self, part: str, method: str) -> Signature:
+        label = f"{part}.{method}"
+        built = self._classes.get(part)
+        if method == BUILD and built is not None:
+            return Signature(
+                function=label,
+                parameters=tuple(
+                    Parameter(name=p.name, kind=p.kind, type=p.type.text, types=self._known(p.type.refs))
+                    for p in built.init
+                ),
+                returns=part,
+                return_types=(part,),
+                doc=built.doc,
+            )
+        name = self._board.method(part, method) if built is not None else label
+        found = self._functions.get(name or "")
+        if found is None:
+            raise UnknownNameError(f"no method {method!r} on {part!r}")
+        return Signature(
+            function=label,
+            parameters=tuple(
+                Parameter(name=p.name, kind=p.kind, type=p.type.text, types=self._known(p.type.refs))
+                for p in found.params
+            ),
+            returns=found.returns.text,
+            return_types=self._known(found.returns.refs),
+            doc=found.doc,
+        )
+
+    def _known(self, refs: Iterable[str]) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(ref for ref in refs if ref in self._classes))
+
+    @staticmethod
+    def _sent(signature: Signature) -> Iterator[str]:
+        for parameter in signature.parameters:
+            yield from parameter.types
+        yield from signature.return_types
 
     def _root(self) -> str:
         """The folder that holds the package: the parent of the package's own directory."""

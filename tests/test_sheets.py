@@ -3,20 +3,24 @@ import pytest
 from schematic.board import Board
 from schematic.errors import UnknownNameError
 from schematic.recording import Recording
-from schematic.scan import StaticScan
+from schematic.scan import ClassKind, ParamKind, StaticScan
 from schematic.sheets import (
     Call,
     Collaborator,
+    DataType,
+    Field,
     FunctionRef,
     Inbound,
     Member,
     Outbound,
+    Parameter,
     Part,
     PartDetail,
     PartKind,
     Role,
     Sheets,
     SheetSummary,
+    Signature,
 )
 
 
@@ -79,7 +83,7 @@ def test_the_index_lists_the_overview_first(sheets: Sheets) -> None:
     assert sheets.index().sheets == (
         SheetSummary(id="shop", title="shop", parts=4),
         SheetSummary(id="app", title="app", parts=1),
-        SheetSummary(id="errors", title="errors", parts=0),
+        SheetSummary(id="errors", title="errors", parts=2),
         SheetSummary(id="ports", title="ports", parts=0),
         SheetSummary(id="store", title="store", parts=2),
     )
@@ -147,3 +151,49 @@ def test_a_module_lists_its_own_functions_but_not_the_ones_nested_in_them(sheets
 def test_an_unknown_part_is_refused(sheets: Sheets) -> None:
     with pytest.raises(UnknownNameError, match=r"no part 'shop\.store\.Basket'"):
         sheets.detail("shop.store.Basket")
+
+
+def test_a_call_sends_its_parameters_and_returns_its_result_with_the_data_classes_in_them(sheets: Sheets) -> None:
+    data = sheets.data(["shop.errors|refusal"])
+    assert data.signatures == (
+        Signature(
+            function="shop.errors.refusal",
+            parameters=(
+                Parameter(name="item", kind=ParamKind.POSITIONAL, type="str", types=()),
+                Parameter(name="reason", kind=ParamKind.POSITIONAL, type="str", types=()),
+            ),
+            returns="shop.errors.Refusal",
+            return_types=("shop.errors.Refusal",),
+            doc=None,
+        ),
+    )
+    assert data.types == (
+        DataType(
+            id="shop.errors.Refusal",
+            title="Refusal",
+            kinds=(ClassKind.DATACLASS,),
+            doc="What a refused order was, and why.",
+            data=True,
+            fields=(Field(name="item", type="str"), Field(name="reason", type="str")),
+        ),
+    )
+
+
+def test_a_construction_sends_the_constructor_parameters_and_returns_the_part(sheets: Sheets) -> None:
+    data = sheets.data(["shop.store.MemoryOrders|new"])
+    clock = Parameter(name="clock", kind=ParamKind.KEYWORD, type="shop.ports.Clock", types=("shop.ports.Clock",))
+    assert (data.signatures[0].parameters, data.signatures[0].returns) == ((clock,), "shop.store.MemoryOrders")
+    assert [(found.id, found.data, [f.name for f in found.fields]) for found in data.types] == [
+        ("shop.ports.Clock", False, []),
+        ("shop.store.MemoryOrders", False, ["clock"]),
+    ]
+
+
+def test_a_construction_of_a_dataclass_takes_its_generated_constructor(sheets: Sheets) -> None:
+    parameters = sheets.data(["shop.errors.Refusal|new"]).signatures[0].parameters
+    assert [(p.name, p.type) for p in parameters] == [("item", "str"), ("reason", "str")]
+
+
+def test_data_for_an_unknown_function_is_refused(sheets: Sheets) -> None:
+    with pytest.raises(UnknownNameError, match=r"no method 'fill' on 'shop\.store\.MemoryOrders'"):
+        sheets.data(["shop.store.MemoryOrders|fill"])

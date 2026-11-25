@@ -63,6 +63,14 @@ def test_the_details_of_a_part_are_served(server: SheetServer) -> None:
     assert (detail["title"], detail["implements"]) == ("MemoryOrders", ["shop.ports.Orders"])
 
 
+def test_the_data_of_calls_is_served(server: SheetServer) -> None:
+    data = json.loads(get(server, "api/states/working/data?call=shop.errors%7Crefusal")[2])
+    assert (data["signatures"][0]["returns"], [t["title"] for t in data["types"]]) == (
+        "shop.errors.Refusal",
+        ["Refusal"],
+    )
+
+
 def test_an_unknown_sheet_answers_404(server: SheetServer) -> None:
     status, _, body = get(server, "api/states/working/sheets/basket")
     assert (status, json.loads(body)) == (404, {"detail": "no sheet 'basket'"})

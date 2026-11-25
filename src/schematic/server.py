@@ -5,7 +5,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources.abc import Traversable
 from socketserver import BaseServer
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from pydantic import BaseModel
 
@@ -60,13 +60,14 @@ class SheetRequests(BaseHTTPRequestHandler):
         super().__init__(request, client_address, server)
 
     def do_GET(self) -> None:
-        path = urlsplit(self.path).path
+        address = urlsplit(self.path)
+        path = address.path
         if path in STATIC:
             name, content_type = STATIC[path]
             self._send(HTTPStatus.OK, content_type, self._web.joinpath(name).read_bytes())
             return
         try:
-            body = self._api([unquote(part) for part in path.strip("/").split("/")])
+            body = self._api([unquote(part) for part in path.strip("/").split("/")], parse_qs(address.query))
         except UnknownNameError as error:
             self._send(HTTPStatus.NOT_FOUND, JSON, json.dumps({"detail": str(error)}).encode())
             return
@@ -79,10 +80,12 @@ class SheetRequests(BaseHTTPRequestHandler):
         # One local viewer: a line per request would bury the URL in the terminal.
         return
 
-    def _api(self, parts: list[str]) -> BaseModel | None:
+    def _api(self, parts: list[str], query: dict[str, list[str]]) -> BaseModel | None:
         match parts:
             case ["api", "states"]:
                 return self._states.index()
+            case ["api", "states", state, "data"]:
+                return self._states.sheets(state).data(query.get("call", []))
             case ["api", "states", state, *rest]:
                 return self._state(state, rest)
             case ["api", "compare", base, head, *rest]:
