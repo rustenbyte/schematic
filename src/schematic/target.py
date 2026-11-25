@@ -5,6 +5,7 @@ from pathlib import Path
 
 from schematic.errors import MissingResultError, ProbeFailedError, TargetError
 from schematic.recording import Recording
+from schematic.revision import Repository, Revision
 from schematic.scan import StaticScan
 
 INTERPRETERS = (Path(".venv/bin/python"), Path(".venv/Scripts/python.exe"))
@@ -34,6 +35,17 @@ class Target:
     def scan(self, *, output: Path) -> StaticScan:
         self._run("static_scan.py", output)
         return StaticScan.model_validate_json(output.read_bytes())
+
+    def scan_revision(self, revision: Revision, *, results: Results) -> StaticScan:
+        """Scan the package as it was at a revision, from an export of its files, with this target's interpreter."""
+        package = self.package_dir.relative_to(self.root)
+        tree = results.export_dir(revision)
+        if not tree.is_dir():
+            Repository(root=self.root).export(revision, ("pyproject.toml", package.as_posix()), into=tree)
+        exported = Target(root=tree, package_dir=tree / package, interpreter=self.interpreter)
+        scan = exported.scan(output=results.revision_scan_file(revision.sha))
+        results.revision_file(revision.sha).write_text(revision.model_dump_json(), encoding="utf-8")
+        return scan
 
     def record(self, pytest_args: tuple[str, ...], *, output: Path) -> Recording:
         self._run("flow_recorder.py", output, *pytest_args)
@@ -85,6 +97,38 @@ class Results:
         if not self.scan_file.is_file():
             raise MissingResultError("no scan yet: run `schematic scan` first")
         return StaticScan.model_validate_json(self.scan_file.read_bytes())
+
+    def export_dir(self, revision: Revision) -> Path:
+        return self.directory / "exports" / revision.sha
+
+    def revision_scan_file(self, sha: str) -> Path:
+        return self.directory / "revisions" / f"{sha}.scan.json"
+
+    def revision_file(self, sha: str) -> Path:
+        return self.directory / "revisions" / f"{sha}.revision.json"
+
+    def revisions(self) -> tuple[Revision, ...]:
+        """The scanned revisions, newest commit first."""
+        folder = self.directory / "revisions"
+        found = (
+            [
+                Revision.model_validate_json(path.read_bytes())
+                for path in sorted(folder.glob("*.revision.json"))
+                if (folder / path.name.replace(".revision.json", ".scan.json")).is_file()
+            ]
+            if folder.is_dir()
+            else []
+        )
+        return tuple(sorted(found, key=lambda revision: revision.date, reverse=True))
+
+    def revision_scan(self, sha: str) -> StaticScan:
+        path = self.revision_scan_file(sha)
+        if not path.is_file():
+            raise MissingResultError(f"no scan of {sha}: run `schematic scan --revision {sha}`")
+        return StaticScan.model_validate_json(path.read_bytes())
+
+    def has_scan(self) -> bool:
+        return self.scan_file.is_file()
 
     def has_recording(self) -> bool:
         return self.recording_file.is_file()

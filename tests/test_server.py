@@ -7,11 +7,10 @@ from urllib.request import urlopen
 
 import pytest
 
-from schematic.board import Board
 from schematic.errors import UiMissingError
-from schematic.recording import Recording
 from schematic.server import SheetServer
-from schematic.sheets import Sheets
+from schematic.states import States
+from schematic.target import Results
 
 PAGE = {"index.html": "<!doctype html><title>sheet</title>", "app.js": "void 0;", "style.css": "body {}"}
 
@@ -24,8 +23,8 @@ def web(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def server(board: Board, recording: Recording, web: Path) -> Iterator[SheetServer]:
-    served = SheetServer(sheets=Sheets(board=board, recording=recording), web=web, port=0)
+def server(results: Results, web: Path) -> Iterator[SheetServer]:
+    served = SheetServer(states=States(results=results), web=web, port=0)
     thread = threading.Thread(target=served.serve_forever)
     thread.start()
     yield served
@@ -47,29 +46,39 @@ def test_the_page_is_served_at_the_root(server: SheetServer) -> None:
 
 
 def test_the_index_of_sheets_is_served_as_json(server: SheetServer) -> None:
-    status, content_type, body = get(server, "api/sheets")
+    status, content_type, body = get(server, "api/states/working/sheets")
     assert (status, content_type) == (200, "application/json")
     assert [sheet["id"] for sheet in json.loads(body)["sheets"]] == ["shop", "app", "errors", "ports", "store"]
 
 
 def test_a_sheet_and_its_flows_are_served(server: SheetServer) -> None:
-    sheet = json.loads(get(server, "api/sheets/store")[2])
-    flows = json.loads(get(server, "api/sheets/store/flows")[2])
+    sheet = json.loads(get(server, "api/states/working/sheets/store")[2])
+    flows = json.loads(get(server, "api/states/working/sheets/store/flows")[2])
     assert [part["title"] for part in sheet["parts"]] == ["MemoryOrders", "SystemClock"]
     assert len(flows["flows"]) == 4
 
 
 def test_the_details_of_a_part_are_served(server: SheetServer) -> None:
-    detail = json.loads(get(server, "api/sheets/store/parts/0")[2])
+    detail = json.loads(get(server, "api/states/working/parts/shop.store.MemoryOrders")[2])
     assert (detail["title"], detail["implements"]) == ("MemoryOrders", ["shop.ports.Orders"])
 
 
 def test_an_unknown_sheet_answers_404(server: SheetServer) -> None:
-    status, _, body = get(server, "api/sheets/basket")
+    status, _, body = get(server, "api/states/working/sheets/basket")
     assert (status, json.loads(body)) == (404, {"detail": "no sheet 'basket'"})
 
 
-def test_a_server_without_the_built_page_refuses_to_start(board: Board, tmp_path: Path) -> None:
+def test_the_states_list_the_working_tree_first(server: SheetServer) -> None:
+    states = json.loads(get(server, "api/states")[2])
+    assert (states["current"], [state["id"] for state in states["states"]]) == ("working", ["working"])
+
+
+def test_an_unknown_state_answers_404(server: SheetServer) -> None:
+    status, _, body = get(server, "api/states/v9/sheets")
+    assert (status, json.loads(body)) == (404, {"detail": "no state 'v9'"})
+
+
+def test_a_server_without_the_built_page_refuses_to_start(results: Results, tmp_path: Path) -> None:
     (tmp_path / "index.html").write_text("", encoding="utf-8")
     with pytest.raises(UiMissingError, match=r"app\.js, style\.css missing"):
-        SheetServer(sheets=Sheets(board=board, recording=None), web=tmp_path, port=0)
+        SheetServer(states=States(results=results), web=tmp_path, port=0)

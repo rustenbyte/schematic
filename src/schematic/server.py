@@ -9,8 +9,9 @@ from urllib.parse import unquote, urlsplit
 
 from pydantic import BaseModel
 
+from schematic.changes import Comparison
 from schematic.errors import UiMissingError, UnknownNameError
-from schematic.sheets import Sheets
+from schematic.states import States
 
 STATIC = {
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -23,13 +24,13 @@ JSON = "application/json"
 class SheetServer:
     """Serves the sheets of one project and the page that draws them, on the loopback interface only."""
 
-    def __init__(self, *, sheets: Sheets, web: Traversable, port: int) -> None:
+    def __init__(self, *, states: States, web: Traversable, port: int) -> None:
         missing = [name for name, _ in STATIC.values() if not web.joinpath(name).is_file()]
         if missing:
             raise UiMissingError(
                 f"the UI is not built ({', '.join(missing)} missing): run `npm ci` and `npm run build` in ui/"
             )
-        self._server = ThreadingHTTPServer(("127.0.0.1", port), partial(SheetRequests, sheets=sheets, web=web))
+        self._server = ThreadingHTTPServer(("127.0.0.1", port), partial(SheetRequests, states=states, web=web))
 
     @property
     def url(self) -> str:
@@ -51,10 +52,10 @@ class SheetRequests(BaseHTTPRequestHandler):
         client_address: tuple[str, int],
         server: BaseServer,
         *,
-        sheets: Sheets,
+        states: States,
         web: Traversable,
     ) -> None:
-        self._sheets = sheets
+        self._states = states
         self._web = web
         super().__init__(request, client_address, server)
 
@@ -80,15 +81,38 @@ class SheetRequests(BaseHTTPRequestHandler):
 
     def _api(self, parts: list[str]) -> BaseModel | None:
         match parts:
-            case ["api", "sheets"]:
-                return self._sheets.index()
-            case ["api", "sheets", sheet_id]:
-                return self._sheets.sheet(sheet_id)
-            case ["api", "sheets", sheet_id, "flows"]:
-                return self._sheets.flows(sheet_id)
-            case ["api", "sheets", sheet_id, "parts", index] if index.isdigit():
-                return self._sheets.part(sheet_id, int(index))
+            case ["api", "states"]:
+                return self._states.index()
+            case ["api", "states", state, *rest]:
+                return self._state(state, rest)
+            case ["api", "compare", base, head, *rest]:
+                return self._compare(base, head, rest)
         return None
+
+    def _state(self, state: str, rest: list[str]) -> BaseModel | None:
+        sheets = self._states.sheets(state)
+        match rest:
+            case ["sheets"]:
+                return sheets.index()
+            case ["sheets", sheet_id]:
+                return sheets.sheet(sheet_id)
+            case ["sheets", sheet_id, "flows"]:
+                return sheets.flows(sheet_id)
+            case ["parts", part_id]:
+                return sheets.detail(part_id)
+        return None
+
+    def _compare(self, base: str, head: str, rest: list[str]) -> BaseModel | None:
+        comparison = self._comparison(base, head)
+        match rest:
+            case []:
+                return comparison.index()
+            case ["sheets", sheet_id]:
+                return comparison.sheet(sheet_id)
+        return None
+
+    def _comparison(self, base: str, head: str) -> Comparison:
+        return Comparison(base=self._states.sheets(base), head=self._states.sheets(head), base_id=base, head_id=head)
 
     def _send(self, status: HTTPStatus, content_type: str, body: bytes) -> None:
         self.send_response(status)

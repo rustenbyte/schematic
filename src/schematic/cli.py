@@ -7,9 +7,10 @@ from pathlib import Path
 
 from schematic.board import Board
 from schematic.errors import SchematicError
+from schematic.revision import Repository
 from schematic.routes import FastApiRoutes
 from schematic.server import SheetServer
-from schematic.sheets import Sheets
+from schematic.states import States
 from schematic.target import Results, Target
 from schematic.text import TextView
 from schematic.trace import FlowTrace, StaticTrace, flow_coverage
@@ -24,6 +25,12 @@ class Commands:
 
     def scan(self, arguments: argparse.Namespace) -> list[str]:
         target = Target.at(self._project, package=arguments.package)
+        if arguments.revision is not None:
+            revision = Repository(root=target.root).resolve(arguments.revision)
+            scan = target.scan_revision(revision, results=self._results)
+            board = Board(scan=scan, routes=FastApiRoutes(scan=scan))
+            saved = self._results.revision_scan_file(revision.sha)
+            return [f"{revision.label}: {revision.subject}", *TextView(board=board).summary(), f"saved      {saved}"]
         scan = target.scan(output=self._results.scan_file)
         board = Board(scan=scan, routes=FastApiRoutes(scan=scan))
         return [*TextView(board=board).summary(), f"saved      {self._results.scan_file}"]
@@ -63,10 +70,7 @@ class Commands:
         return lines
 
     def serve(self, arguments: argparse.Namespace) -> list[str]:
-        recording = self._results.recording() if self._results.has_recording() else None
-        server = SheetServer(
-            sheets=Sheets(board=self._board(), recording=recording), web=files("schematic.web"), port=0
-        )
+        server = SheetServer(states=States(results=self._results), web=files("schematic.web"), port=0)
         sys.stdout.write(f"schematic serves {self._project} at {server.url} (Ctrl+C stops it)\n")
         sys.stdout.flush()
         webbrowser.open(server.url)
@@ -89,6 +93,7 @@ def parser() -> argparse.ArgumentParser:
     verbs = root.add_subparsers(dest="verb", required=True)
     scan = verbs.add_parser("scan", help="resolve every call of the package with the project's own mypy")
     scan.add_argument("--package", help="the package to scan (default: the project's name)")
+    scan.add_argument("--revision", help="a commit, tag or branch to scan instead of the working tree")
     verbs.add_parser("routes", help="list the HTTP routes and their handlers")
     trace = verbs.add_parser("trace", help="every path a route or a function may take")
     trace.add_argument("start", help='a route such as "GET /api/cm/components", or a function name')

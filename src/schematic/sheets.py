@@ -157,12 +157,12 @@ class SheetIndex(BaseModel):
 
 
 class FunctionRef(BaseModel):
-    """A function a flow ran: its sheet, and its part and method when the part is on the sheet asked for (else -1)."""
+    """A function a flow ran: its sheet, and its part and method when the part is on the sheet asked for (else "")."""
 
     model_config = FROZEN
 
     sheet: str
-    part: int
+    part: str
     method: str
 
 
@@ -247,20 +247,26 @@ class Sheets:
         ]
         return SheetFlows(functions=table.functions(), flows=tuple(paths))
 
-    def part(self, sheet_id: str, index: int) -> PartDetail:
-        parts = self.sheet(sheet_id).parts
-        if not 0 <= index < len(parts):
-            raise UnknownNameError(f"no part {index} on sheet {sheet_id!r}")
-        part = parts[index]
-        if part.kind is PartKind.PACKAGE:
+    @property
+    def ids(self) -> tuple[str, ...]:
+        return self._ids
+
+    def doc_of(self, part_id: str) -> str | None:
+        found = self._classes.get(part_id)
+        if found is not None:
+            return found.doc
+        return self._docs.get(part_id) or self._docs.get(f"{self.overview}.{part_id}")
+
+    def detail(self, part_id: str) -> PartDetail:
+        if part_id in self._ids:
             return PartDetail(
-                id=part.id,
-                title=part.title,
-                kind=part.kind,
-                role=part.role,
-                path=part.path,
+                id=part_id,
+                title=part_id,
+                kind=PartKind.PACKAGE,
+                role=Role.PACKAGE,
+                path=self._paths.get(f"{self.overview}.{part_id}", ""),
                 line=None,
-                doc=self._docs.get(f"{self.overview}.{part.id}"),
+                doc=self.doc_of(part_id),
                 kinds=(),
                 implements=(),
                 built_with=(),
@@ -269,13 +275,16 @@ class Sheets:
                 raises=(),
                 types=(),
             )
+        found = self._classes.get(part_id)
+        if not behaves(found) and part_id not in self._modules:
+            raise UnknownNameError(f"no part {part_id!r}")
         functions = sorted(
             (
-                f
-                for f in self._board.scan.functions
-                if outer(f.fullname) == f.fullname and self.part_of(f.fullname) == part.id
+                function
+                for function in self._board.scan.functions
+                if outer(function.fullname) == function.fullname and self.part_of(function.fullname) == part_id
             ),
-            key=lambda f: f.line,
+            key=lambda function: function.line,
         )
         raises = sorted(
             {
@@ -285,25 +294,27 @@ class Sheets:
                 if link.kind is LinkKind.RAISE and link.via is not None
             }
         )
-        found = self._classes.get(part.id)
         return PartDetail(
-            id=part.id,
-            title=part.title,
-            kind=part.kind,
-            role=part.role,
-            path=part.path,
+            id=part_id,
+            title=part_id.rpartition(".")[2],
+            kind=PartKind.CLASS if found is not None else PartKind.MODULE,
+            role=self._role(part_id),
+            path=self._paths[self.module_of(part_id)],
             line=found.line if found is not None else None,
-            doc=found.doc if found is not None else self._docs.get(part.id),
+            doc=self.doc_of(part_id),
             kinds=found.kinds if found is not None else (),
-            implements=self._board.protocols_of(part.id),
+            implements=self._board.protocols_of(part_id),
             built_with=tuple(
                 Collaborator(name=wire.name, type=wire.type, parts=wire.components)
-                for wire in (self._board.wires(part.id) if found is not None else ())
+                for wire in (self._board.wires(part_id) if found is not None else ())
             ),
-            held_by=tuple(f"{holder.component}.{holder.wire.name}" for holder in self._board.holders(part.id)),
-            members=tuple(Member(name=self.member(part.id, f.fullname), line=f.line, doc=f.doc) for f in functions),
+            held_by=tuple(f"{holder.component}.{holder.wire.name}" for holder in self._board.holders(part_id)),
+            members=tuple(
+                Member(name=self.member(part_id, function.fullname), line=function.line, doc=function.doc)
+                for function in functions
+            ),
             raises=tuple(raises),
-            types=tuple(c.fullname for c in self._board.scan.classes if c.module == part.id and not behaves(c)),
+            types=tuple(c.fullname for c in self._board.scan.classes if c.module == part_id and not behaves(c)),
         )
 
     def sheet_of(self, name: str) -> str:
@@ -514,12 +525,12 @@ class FunctionTable:
             return found
         sheet = self._sheets.sheet_of(name)
         if self._overview:
-            row = FunctionRef(sheet=sheet, part=self._parts.get(sheet, -1), method="")
+            row = FunctionRef(sheet=sheet, part=sheet if sheet in self._parts else "", method="")
         else:
             part = self._sheets.part_of(name)
-            position = self._parts.get(part, -1)
+            on = part in self._parts
             row = FunctionRef(
-                sheet=sheet, part=position, method=self._sheets.member(part, name) if position >= 0 else ""
+                sheet=sheet, part=part if on else "", method=self._sheets.member(part, name) if on else ""
             )
         self._refs[name] = len(self._rows)
         self._rows.append(row)

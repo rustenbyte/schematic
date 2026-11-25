@@ -90,9 +90,9 @@ def test_a_flow_is_numbered_against_the_parts_of_the_sheet(sheets: Sheets) -> No
     first = next(path for path in flows.flows if path.name == "place an order")
     assert first.edges == ((-1, 0, 1), (-1, 1, 1), (1, 2, 1))
     assert [flows.functions[i] for i in (0, 1, 2)] == [
-        FunctionRef(sheet="store", part=0, method="new"),
-        FunctionRef(sheet="store", part=0, method="place"),
-        FunctionRef(sheet="store", part=0, method="_count"),
+        FunctionRef(sheet="store", part="shop.store.MemoryOrders", method="new"),
+        FunctionRef(sheet="store", part="shop.store.MemoryOrders", method="place"),
+        FunctionRef(sheet="store", part="shop.store.MemoryOrders", method="_count"),
     ]
 
 
@@ -116,7 +116,7 @@ def test_an_unknown_sheet_is_refused(sheets: Sheets) -> None:
 
 
 def test_a_class_has_its_place_wiring_members_docstrings_and_raises(sheets: Sheets, scan: StaticScan) -> None:
-    assert sheets.part("store", 0) == PartDetail(
+    assert sheets.detail("shop.store.MemoryOrders") == PartDetail(
         id="shop.store.MemoryOrders",
         title="MemoryOrders",
         kind=PartKind.CLASS,
@@ -139,11 +139,11 @@ def test_a_class_has_its_place_wiring_members_docstrings_and_raises(sheets: Shee
 
 
 def test_a_module_lists_its_own_functions_but_not_the_ones_nested_in_them(sheets: Sheets) -> None:
-    members = sheets.part("app", 0).members
+    members = sheets.detail("shop.app").members
     assert [member.name for member in members] == ["orders", "caller_name", "place", "add_health_routes"]
     assert members[3].doc == "Add a health route under `path`."
 
 
-def test_a_part_outside_the_sheet_is_refused(sheets: Sheets) -> None:
-    with pytest.raises(UnknownNameError, match="no part 2 on sheet 'store'"):
-        sheets.part("store", 2)
+def test_an_unknown_part_is_refused(sheets: Sheets) -> None:
+    with pytest.raises(UnknownNameError, match=r"no part 'shop\.store\.Basket'"):
+        sheets.detail("shop.store.Basket")
