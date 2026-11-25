@@ -33,7 +33,12 @@ class Orders(Protocol):
     def place(self, item: str) -> int: ...
 """,
     "src/shop/errors.py": """
+\"\"\"What the shop refuses to do.\"\"\"
+
+
 class ShopError(Exception):
+    \"\"\"A refusal, with the reason in its message.\"\"\"
+
     def __init__(self, message: str) -> None:
         super().__init__(message)
 
@@ -65,6 +70,7 @@ class MemoryOrders:
         return self._count()
 
     def _count(self) -> int:
+        \"\"\"Count every order placed so far.\"\"\"
         return len(self._placed)
 """,
     "src/shop/app.py": """
@@ -95,6 +101,8 @@ def place(item: str, service: OrdersDep) -> int:
 
 
 def add_health_routes(router: APIRouter, *, path: str) -> None:
+    \"\"\"Add a health route under `path`.\"\"\"
+
     @router.get(f"{path}/health")
     def health() -> str:
         return "ok"

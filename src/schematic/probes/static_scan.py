@@ -278,6 +278,34 @@ class References(TraverserVisitor):
             self.found.append(referenced)
 
 
+class Docstrings:
+    """The docstrings of modules, classes and functions, read with `ast` and found by module and line.
+
+    A class or function is found by the line of its `def` or `class`, and by the line of its first decorator,
+    as the two ways a line can name it.
+    """
+
+    def __init__(self, *, sources: dict[str, ast.Module]) -> None:
+        self._modules = {module: ast.get_docstring(source) for module, source in sources.items()}
+        self._definitions: dict[tuple[str, int], str] = {}
+        for module, source in sources.items():
+            for node in ast.walk(source):
+                if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                doc = ast.get_docstring(node)
+                if doc is None:
+                    continue
+                self._definitions[(module, node.lineno)] = doc
+                if node.decorator_list:
+                    self._definitions.setdefault((module, node.decorator_list[0].lineno), doc)
+
+    def of(self, module: str, line: int) -> str | None:
+        return self._definitions.get((module, line))
+
+    def module(self, module: str) -> str | None:
+        return self._modules.get(module)
+
+
 class AnnotationCalls:
     """Calls inside `Annotated[...]` metadata, which mypy drops from its tree.
 
@@ -285,10 +313,9 @@ class AnnotationCalls:
     framework rule can find, for instance, the dependencies of a request handler.
     """
 
-    def __init__(self, *, trees: dict[str, MypyFile]) -> None:
+    def __init__(self, *, trees: dict[str, MypyFile], sources: dict[str, ast.Module]) -> None:
         self._aliases: dict[str, list[Json]] = {}
         self._parameters: dict[tuple[str, int], list[Json]] = {}
-        sources = {module: ast.parse(Path(tree.path).read_text(encoding="utf-8")) for module, tree in trees.items()}
         for module, tree in trees.items():
             self._read_aliases(module, tree, sources[module])
         for module, tree in trees.items():
@@ -399,10 +426,11 @@ def constructor_params(info: TypeInfo) -> list[Json]:
 
 
 class Scan(TraverserVisitor):
-    def __init__(self, *, resolver: Resolver, annotations: AnnotationCalls) -> None:
+    def __init__(self, *, resolver: Resolver, annotations: AnnotationCalls, docstrings: Docstrings) -> None:
         super().__init__()
         self._resolver = resolver
         self._annotations = annotations
+        self._docstrings = docstrings
         self._module = ""
         self._functions_open: list[FuncDef] = []
         self.classes: list[Json] = []
@@ -437,6 +465,7 @@ class Scan(TraverserVisitor):
                     if isinstance(symbol.node, FUNCTION_NODES) and not symbol.plugin_generated
                 ],
                 "init": constructor_params(info),
+                "doc": self._docstrings.of(self._module, o.line),
             }
         )
         if not info.is_protocol:
@@ -462,6 +491,7 @@ class Scan(TraverserVisitor):
                 "params": signature_params(signature, bound=is_method(o)) if signature else [],
                 "returns": type_json(signature.ret_type if signature else None),
                 "annotation_calls": self._annotations.of(self._module, o.line),
+                "doc": self._docstrings.of(self._module, o.line),
             }
         )
         self._functions_open.append(o)
@@ -617,7 +647,13 @@ def main() -> None:
     options.cache_dir = os.devnull
     result = build.build(targets, options)
     trees = dict(package_trees(result, package))
-    scan = Scan(resolver=Resolver(types=result.types), annotations=AnnotationCalls(trees=trees))
+    sources = {module: ast.parse(Path(tree.path).read_text(encoding="utf-8")) for module, tree in trees.items()}
+    docstrings = Docstrings(sources=sources)
+    scan = Scan(
+        resolver=Resolver(types=result.types),
+        annotations=AnnotationCalls(trees=trees, sources=sources),
+        docstrings=docstrings,
+    )
     for tree in trees.values():
         scan.scan(tree)
     functions = [{**row, "decorators": scan.decorated.get(str(row["fullname"]), [])} for row in scan.functions]
@@ -625,7 +661,10 @@ def main() -> None:
         json.dumps(
             {
                 "package": package,
-                "modules": [{"name": module, "path": tree.path} for module, tree in trees.items()],
+                "modules": [
+                    {"name": module, "path": tree.path, "doc": docstrings.module(module)}
+                    for module, tree in trees.items()
+                ],
                 "classes": scan.classes,
                 "functions": functions,
                 "calls": scan.calls,

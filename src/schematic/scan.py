@@ -76,6 +76,7 @@ class FunctionScan(BaseModel):
     returns: TypeText
     annotation_calls: tuple[AnnotationCall, ...]
     decorators: tuple[DecoratorUse, ...]
+    doc: str | None
 
 
 class ClassScan(BaseModel):
@@ -88,6 +89,7 @@ class ClassScan(BaseModel):
     bases: tuple[str, ...]
     methods: tuple[str, ...]
     init: tuple[Param, ...]
+    doc: str | None
 
 
 class Receiver(BaseModel):
@@ -158,6 +160,7 @@ class ModuleScan(BaseModel):
 
     name: str
     path: str
+    doc: str | None
 
 
 class StaticScan(BaseModel):
