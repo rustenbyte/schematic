@@ -39,9 +39,9 @@ body {
   font-size: 13px;
   line-height: 1.45;
   display: grid;
-  grid-template-columns: 272px minmax(0, 1fr);
+  grid-template-columns: 272px minmax(0, 1fr) 340px;
   grid-template-rows: 48px minmax(0, 1fr);
-  grid-template-areas: "bar bar" "rail stage";
+  grid-template-areas: "bar bar bar" "rail stage side";
   overflow: hidden;
 }
 button, input { font: inherit; color: inherit; }
@@ -108,6 +108,43 @@ button { cursor: pointer; }
 .zoom button:hover { color: var(--ink); background: var(--current-soft); }
 .notice { position: absolute; left: 16px; bottom: 16px; margin: 0; padding: 8px 12px; border: 1px solid var(--fault); border-radius: 8px; background: var(--chip); color: var(--fault); max-width: 60ch; }
 
+.side { grid-area: side; border-left: 1px solid var(--rule); background: var(--film-deep); min-height: 0; overflow: auto; }
+.inspector { padding-bottom: 20px; }
+.inspector .head { padding: 16px 18px 10px; border-bottom: 1px solid var(--rule); }
+.inspector .kicker { display: flex; gap: 12px; color: var(--ink-2); font-size: 12px; }
+.inspector h1 { margin: 4px 0 2px; font-size: 19px; font-stretch: expanded; font-weight: 680; letter-spacing: -0.015em; line-height: 1.2; overflow-wrap: anywhere; }
+.inspector .path { font-stretch: condensed; color: var(--ink-2); overflow-wrap: anywhere; }
+.inspector a { color: inherit; text-decoration-color: var(--ink-3); text-underline-offset: 2px; }
+.inspector a:hover { color: var(--current); }
+.inspector code { font-family: inherit; font-stretch: condensed; font-weight: 600; }
+.inspector .doc { padding: 10px 18px 0; }
+.inspector .doc p { margin: 0 0 8px; max-width: 60ch; }
+.inspector .tags { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 18px 0; }
+.inspector .tag { border: 1px solid var(--rule); border-radius: 999px; padding: 0 8px; font-size: 11px; color: var(--ink-2); font-stretch: condensed; }
+.inspector section { padding: 12px 18px 2px; }
+.inspector h3 { margin: 0 0 6px; font-size: 12px; font-weight: 650; color: var(--ink-2); }
+.inspector ul { list-style: none; margin: 0; padding: 0; }
+.inspector li { padding: 2px 0; display: flex; gap: 8px; justify-content: space-between; align-items: baseline; }
+.inspector .n { color: var(--ink-3); font-variant-numeric: tabular-nums; font-size: 12px; white-space: nowrap; }
+.inspector .facts { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; margin: 0; }
+.inspector .facts dt { color: var(--ink-2); }
+.inspector .facts dd { margin: 0; font-variant-numeric: tabular-nums; }
+.inspector .pairs { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; }
+.inspector .pairs .name { font-weight: 600; }
+.inspector .pairs .type { color: var(--ink-2); font-stretch: condensed; overflow-wrap: anywhere; }
+.inspector .members li { display: block; }
+.inspector .member { display: flex; justify-content: space-between; gap: 8px; }
+.inspector .member code { color: var(--ink-3); font-weight: 500; }
+.inspector .member code.wired { color: var(--ink); font-weight: 650; }
+.inspector .member-doc { color: var(--ink-2); font-size: 12px; line-height: 1.4; padding: 1px 0 4px 10px; }
+.inspector .calls li { align-items: flex-start; }
+.inspector .fault-list li { color: var(--fault); }
+.inspector .quiet { color: var(--ink-2); padding: 12px 18px 0; margin: 0; }
+.inspector .actions { display: flex; gap: 8px; padding: 14px 18px 0; flex-wrap: wrap; }
+.inspector button.link { border: 0; background: none; padding: 0; color: var(--ink); text-align: left; }
+.inspector button.link:hover { color: var(--current); text-decoration: underline; }
+.inspector .primary { border: 1px solid var(--ink); background: var(--ink); color: var(--film); border-radius: 6px; padding: 5px 12px; font-weight: 600; }
+
 .paper { fill: var(--film); }
 .grid-minor { fill: none; stroke: var(--grid-minor); stroke-width: 0.6; }
 .grid-major { fill: none; stroke: var(--grid-major); stroke-width: 0.8; }
@@ -152,10 +189,13 @@ button { cursor: pointer; }
 .flowing .flag-text.lit { fill: var(--current); }
 .focusing .near { opacity: 1; }
 .focusing .wire.near { stroke-width: 2; }
+.part.selected .body { stroke-width: 2.6; }
+.wire.selected { stroke-width: 2.6; opacity: 1; }
 
 @media (prefers-reduced-motion: reduce) { .part, .fade { transition: none; } }
 @media (max-width: 900px) {
-  body { grid-template-columns: minmax(0, 1fr); grid-template-rows: 48px minmax(0, 1fr) 38vh; grid-template-areas: "bar" "stage" "rail"; }
+  body { grid-template-columns: minmax(0, 1fr); grid-template-rows: 48px minmax(0, 1fr) 30vh 30vh; grid-template-areas: "bar" "stage" "side" "rail"; }
+  .side { border-left: 0; border-top: 1px solid var(--rule); }
   .rail { border-right: 0; border-top: 1px solid var(--rule); }
   .figures, .sheet-controls .control { display: none; }
 }

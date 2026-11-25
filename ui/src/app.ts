@@ -1,10 +1,14 @@
-import type { FlowPath, Sheet, SheetFlows, SheetIndex } from "./api.ts";
+import type { FlowPath, PartDetail, Sheet, SheetFlows, SheetIndex } from "./api.ts";
 import { fetchJson } from "./api.ts";
+import { Inspector } from "./inspector.ts";
+import type { PanelContext } from "./inspector.ts";
 import { LayoutEngine } from "./layout.ts";
 import { Theme } from "./theme.ts";
-import type { Drawing, Grouping, Point, ViewState } from "./model.ts";
-import { at, drawing, elkGraph } from "./model.ts";
+import type { Drawing, Grouping, Point, ViewState, Wire } from "./model.ts";
+import { at, drawing, elkGraph, wireKey } from "./model.ts";
+import { readableTest } from "./names.ts";
 import { SheetView } from "./view.ts";
+import type { Selection } from "./view.ts";
 import { Viewport } from "./viewport.ts";
 
 const GROUPINGS: readonly Grouping[] = ["none", "role", "file", "service"];
@@ -15,15 +19,6 @@ function byId<T extends Element>(id: string, kind: { new (): T; prototype: T }):
     throw new Error(`the page has no #${id}`);
   }
   return found;
-}
-
-function readable(test: string): { name: string; param: string } {
-  const name = test.split("::").pop() ?? test;
-  const match = /^test_(.*?)(\[(.*)\])?$/.exec(name);
-  if (match === null) {
-    return { name, param: "" };
-  }
-  return { name: (match[1] ?? name).replace(/_/g, " "), param: (match[3] ?? "").replace(/_/g, " ") };
 }
 
 function html<K extends keyof HTMLElementTagNameMap>(name: K, text = "", className = ""): HTMLElementTagNameMap[K] {
@@ -49,7 +44,18 @@ class App {
   private readonly notice = byId("notice", HTMLParagraphElement);
   private readonly engine = new LayoutEngine();
   private readonly viewport = new Viewport(this.svg, this.stage);
-  private readonly view = new SheetView(this.svg, { part: (index) => this.onPart(index), dragging: () => this.viewport.dragging });
+  private readonly view = new SheetView(this.svg, {
+    part: (index) => this.onPart(index),
+    wire: (wire) => this.select({ wire: wireKey(wire) }),
+    clear: () => this.select(null),
+    dragging: () => this.viewport.dragging,
+  });
+  private readonly inspector = new Inspector(byId("inspector", HTMLDivElement), {
+    open: (sheetId) => void this.open(sheetId).catch((error: unknown) => this.fail(error)),
+    selectPart: (index) => this.select({ part: index }),
+    toggle: (index) => this.toggle(index),
+    clearFlow: () => this.chooseFlow(null),
+  });
   private readonly theme = new Theme(document.documentElement, [...document.querySelectorAll<HTMLButtonElement>("[data-theme-choice]")]);
   private readonly expanded = new Set<number>();
   private index: SheetIndex | null = null;
@@ -59,6 +65,9 @@ class App {
   private flow: FlowPath | null = null;
   private placed = new Map<string, Point>();
   private run = 0;
+  private current: Drawing | null = null;
+  private selection: Selection = null;
+  private asked = 0;
 
   constructor() {
     for (const button of document.querySelectorAll<HTMLButtonElement>("[data-grouping]")) {
@@ -81,6 +90,11 @@ class App {
     byId("zoom-fit", HTMLButtonElement).addEventListener("click", () => void this.relayout(true));
     this.clearFlow.addEventListener("click", () => this.chooseFlow(null));
     this.filter.addEventListener("input", () => this.renderFlows());
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !(event.target instanceof HTMLInputElement)) {
+        this.select(null);
+      }
+    });
   }
 
   async start(): Promise<void> {
@@ -106,6 +120,8 @@ class App {
     this.expanded.clear();
     this.flow = null;
     this.placed = new Map();
+    this.selection = null;
+    this.view.select(null);
     if (hash !== null) {
       this.grouping = GROUPINGS.find((grouping) => grouping === hash.get("group")) ?? this.grouping;
       for (const title of (hash.get("expand") ?? "").split(",").filter(Boolean)) {
@@ -144,8 +160,56 @@ class App {
       this.viewport.fit(layout.width, layout.height);
     }
     this.placed = new Map([...layout.parts].map(([index, placed]) => [at(sheet.parts, index).id, { x: placed.x, y: placed.y }]));
+    this.current = d;
     this.renderFigures(d, layout.parts.size, Math.round(performance.now() - started));
+    this.renderPanel();
     this.writeHash();
+  }
+
+  private select(selection: Selection): void {
+    this.selection = selection;
+    this.view.select(selection);
+    this.renderPanel();
+  }
+
+  private toggle(index: number): void {
+    if (!this.expanded.delete(index)) {
+      this.expanded.add(index);
+    }
+    void this.relayout(false);
+  }
+
+  private renderPanel(): void {
+    const index = this.index;
+    const sheet = this.sheet;
+    const d = this.current;
+    if (index === null || sheet === null || d === null) {
+      return;
+    }
+    const context: PanelContext = { index, sheet, drawing: d, flow: this.flow, flows: this.flows.flows.length, expanded: this.expanded };
+    const selection = this.selection;
+    const asked = ++this.asked;
+    if (selection !== null && "part" in selection) {
+      this.inspector.showPart(context, selection.part, null);
+      fetchJson<PartDetail>(`/api/sheets/${encodeURIComponent(sheet.id)}/parts/${selection.part}`)
+        .then((detail) => {
+          if (asked === this.asked) {
+            this.inspector.showPart(context, selection.part, detail);
+          }
+        })
+        .catch((error: unknown) => this.fail(error));
+      return;
+    }
+    const wire: Wire | undefined = selection !== null && "wire" in selection ? d.wires.find((w) => wireKey(w) === selection.wire) : undefined;
+    if (wire !== undefined) {
+      this.inspector.showWire(context, wire);
+      return;
+    }
+    if (this.flow !== null) {
+      this.inspector.showFlow(context, this.flow);
+      return;
+    }
+    this.inspector.showSheet(context);
   }
 
   private onPart(index: number): void {
@@ -157,10 +221,9 @@ class App {
       void this.open(part.id).catch((error: unknown) => this.fail(error));
       return;
     }
-    if (!this.expanded.delete(index)) {
-      this.expanded.add(index);
-    }
-    void this.relayout(false);
+    this.selection = { part: index };
+    this.view.select(this.selection);
+    this.toggle(index);
   }
 
   private chooseFlow(flow: FlowPath | null): void {
@@ -207,7 +270,7 @@ class App {
     const files = new Map<string, FlowPath[]>();
     for (const flow of this.flows.flows) {
       const file = (flow.test.split("::")[0] ?? flow.test).replace(/^tests\//, "");
-      const name = flow.name === flow.test ? readable(flow.test).name : flow.name;
+      const name = flow.name === flow.test ? readableTest(flow.test).name : flow.name;
       if (query && !`${name} ${file}`.toLowerCase().includes(query)) {
         continue;
       }
@@ -220,7 +283,7 @@ class App {
       summary.append(html("span", file), html("span", String(flows.length)));
       const list = html("ul");
       for (const flow of flows) {
-        const words = flow.name === flow.test ? readable(flow.test) : { name: flow.name, param: "" };
+        const words = flow.name === flow.test ? readableTest(flow.test) : { name: flow.name, param: "" };
         const button = html("button", words.name, flow.outcome);
         if (words.param) {
           button.append(html("span", ` ${words.param}`, "param"));

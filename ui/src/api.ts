@@ -7,6 +7,7 @@ export interface Part {
   readonly kind: PartKind;
   readonly role: Role;
   readonly file: string;
+  readonly path: string;
   readonly service: string;
   readonly methods: readonly string[];
 }
@@ -17,6 +18,7 @@ export interface Call {
   readonly target: number;
   readonly target_method: string;
   readonly count: number;
+  readonly lines: readonly number[];
 }
 
 export interface Inbound {
@@ -50,8 +52,38 @@ export interface SheetSummary {
 
 export interface SheetIndex {
   readonly project: string;
+  readonly root: string;
   readonly overview: string;
   readonly sheets: readonly SheetSummary[];
+}
+
+export interface Collaborator {
+  readonly name: string;
+  readonly type: string;
+  readonly parts: readonly string[];
+}
+
+export interface Member {
+  readonly name: string;
+  readonly line: number;
+  readonly doc: string | null;
+}
+
+export interface PartDetail {
+  readonly id: string;
+  readonly title: string;
+  readonly kind: PartKind;
+  readonly role: Role;
+  readonly path: string;
+  readonly line: number | null;
+  readonly doc: string | null;
+  readonly kinds: readonly string[];
+  readonly implements: readonly string[];
+  readonly built_with: readonly Collaborator[];
+  readonly held_by: readonly string[];
+  readonly members: readonly Member[];
+  readonly raises: readonly string[];
+  readonly types: readonly string[];
 }
 
 export interface FunctionRef {

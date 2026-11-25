@@ -1,14 +1,18 @@
 import type { Layout, PlacedPart } from "./layout.ts";
 import type { Drawing, Point, PortInfo, Wire } from "./model.ts";
-import { OTHER, ROW, ROWS_TOP, at, flagLabel } from "./model.ts";
+import { OTHER, ROW, ROWS_TOP, at, flagLabel, wireKey } from "./model.ts";
 import { element, path, text } from "./svg.ts";
 
 const FLAG_CHAR = 6.2;
 
 export interface SheetEvents {
   readonly part: (index: number) => void;
+  readonly wire: (wire: Wire) => void;
+  readonly clear: () => void;
   readonly dragging: () => boolean;
 }
+
+export type Selection = { readonly part: number } | { readonly wire: string } | null;
 
 type Focus = { readonly part: number } | { readonly wire: Wire } | null;
 
@@ -17,6 +21,8 @@ export class SheetView {
   private readonly svg: SVGSVGElement;
   private readonly events: SheetEvents;
   private adjacency = new Map<number, Wire[]>();
+  private wires = new Map<string, Wire>();
+  private selection: Selection = null;
 
   constructor(svg: SVGSVGElement, events: SheetEvents) {
     this.svg = svg;
@@ -32,7 +38,12 @@ export class SheetView {
     element("rect", { width: 50, height: 50, fill: "url(#minor)" }, major);
     element("path", { d: "M50 0H0V50", class: "grid-major" }, major);
     const view = element("g", {}, this.svg);
-    element("rect", { x: -6000, y: -6000, width: layout.width + 12000, height: layout.height + 12000, class: "paper" }, view);
+    const paper = element("rect", { x: -6000, y: -6000, width: layout.width + 12000, height: layout.height + 12000, class: "paper" }, view);
+    paper.addEventListener("click", () => {
+      if (!this.events.dragging()) {
+        this.events.clear();
+      }
+    });
     element("rect", { x: 0, y: 0, width: layout.width, height: layout.height, fill: "url(#major)" }, view);
     const groups = element("g", { class: "fade" }, view);
     const wires = element("g", { class: "fade" }, view);
@@ -45,6 +56,7 @@ export class SheetView {
     const flowing = d.facts !== null;
     this.svg.classList.toggle("flowing", flowing);
     this.adjacency = new Map();
+    this.wires = new Map(d.wires.map((wire) => [wireKey(wire), wire]));
     for (const wire of d.wires) {
       const route = layout.routes.get(wire.id);
       if (route === undefined || route.sections.length === 0) {
@@ -62,6 +74,12 @@ export class SheetView {
       const hit = element("path", { d: line, class: "hit" }, wires);
       hit.addEventListener("mouseenter", () => this.focus({ wire }));
       hit.addEventListener("mouseleave", () => this.focus(null));
+      hit.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (!this.events.dragging()) {
+          this.events.wire(wire);
+        }
+      });
       for (const p of route.junctions) {
         element("circle", { cx: p.x, cy: p.y, r: 2.3, class: lit ? "junction lit" : "junction", "data-wire": wire.id }, wires);
       }
@@ -92,7 +110,13 @@ export class SheetView {
         layer.classList.add("shown");
       }
     }));
+    this.focus(null);
     return view;
+  }
+
+  select(selection: Selection): void {
+    this.selection = selection;
+    this.focus(null);
   }
 
   private part(parent: SVGGElement, index: number, placed: PlacedPart, d: Drawing): SVGGElement {
@@ -202,7 +226,8 @@ export class SheetView {
     text(g, x + 6, y + 3.4, label, lit ? "flag-text lit" : "flag-text");
   }
 
-  private focus(target: Focus): void {
+  private focus(hovered: Focus): void {
+    const target = hovered ?? this.pinned();
     this.svg.classList.toggle("focusing", target !== null);
     const parts = new Set<number>();
     const wires = new Set<string>();
@@ -219,11 +244,29 @@ export class SheetView {
       parts.add(target.wire.source);
       parts.add(target.wire.target);
     }
+    const selected = this.selection;
+    const selectedWire = selected !== null && "wire" in selected ? this.wires.get(selected.wire)?.id : undefined;
     for (const node of this.svg.querySelectorAll("[data-part]")) {
-      node.classList.toggle("near", parts.has(Number(node.getAttribute("data-part"))));
+      const index = Number(node.getAttribute("data-part"));
+      node.classList.toggle("near", parts.has(index));
+      node.classList.toggle("selected", selected !== null && "part" in selected && selected.part === index);
     }
     for (const node of this.svg.querySelectorAll("[data-wire]")) {
-      node.classList.toggle("near", wires.has(node.getAttribute("data-wire") ?? ""));
+      const id = node.getAttribute("data-wire") ?? "";
+      node.classList.toggle("near", wires.has(id));
+      node.classList.toggle("selected", id === selectedWire);
     }
+  }
+
+  private pinned(): Focus {
+    const selected = this.selection;
+    if (selected === null) {
+      return null;
+    }
+    if ("part" in selected) {
+      return { part: selected.part };
+    }
+    const wire = this.wires.get(selected.wire);
+    return wire === undefined ? null : { wire };
   }
 }

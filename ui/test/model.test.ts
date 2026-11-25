@@ -8,14 +8,14 @@ const SHEET: Sheet = {
   id: "store",
   title: "store",
   parts: [
-    { id: "shop.store.Orders", title: "Orders", kind: "class", role: "service", file: "store.py", service: "Orders", methods: ["run"] },
-    { id: "shop.store.Ledger", title: "Ledger", kind: "class", role: "internal", file: "store.py", service: "Orders", methods: ["read", "write"] },
-    { id: "shop.store.rules", title: "rules", kind: "module", role: "module", file: "rules.py", service: "Orders", methods: ["helper"] },
+    { id: "shop.store.Orders", title: "Orders", kind: "class", role: "service", file: "store.py", path: "/shop/store.py", service: "Orders", methods: ["run"] },
+    { id: "shop.store.Ledger", title: "Ledger", kind: "class", role: "internal", file: "store.py", path: "/shop/store.py", service: "Orders", methods: ["read", "write"] },
+    { id: "shop.store.rules", title: "rules", kind: "module", role: "module", file: "rules.py", path: "/shop/rules.py", service: "Orders", methods: ["helper"] },
   ],
   calls: [
-    { source: 0, source_method: "run", target: 1, target_method: "read", count: 2 },
-    { source: 0, source_method: "run", target: 1, target_method: "write", count: 1 },
-    { source: 1, source_method: "read", target: 2, target_method: "helper", count: 1 },
+    { source: 0, source_method: "run", target: 1, target_method: "read", count: 2, lines: [4, 6] },
+    { source: 0, source_method: "run", target: 1, target_method: "write", count: 1, lines: [7] },
+    { source: 1, source_method: "read", target: 2, target_method: "helper", count: 1, lines: [12] },
   ],
   inbound: [{ sheet: "app", target: 0, target_method: "run", count: 1 }],
   outbound: [{ source: 1, source_method: "write", target: "library:pyoxigraph", count: 1 }],
@@ -86,4 +86,9 @@ test("grouping by role puts each part in its role's frame, in the order services
     ["g:module", "2"],
   ]);
   assert.equal(graph.titles.get("g:internal"), "Internal classes");
+});
+
+test("a wire knows the calls it carries, so the panel can list them", () => {
+  const d = drawing(SHEET, state(), FUNCTIONS);
+  assert.deepEqual(d.wires[0]?.calls.map((call) => `${call.source_method}>${call.target_method} ${call.lines.join(",")}`), ["run>read 4,6", "run>write 7"]);
 });

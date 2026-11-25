@@ -1,5 +1,5 @@
 import type { ElkLabel, ElkNode, ElkPort, LayoutOptions } from "elkjs/lib/elk-api.js";
-import type { FlowPath, FunctionRef, Part, Sheet } from "./api.ts";
+import type { Call, FlowPath, FunctionRef, Part, Sheet } from "./api.ts";
 
 export const ROW = 14;
 export const ROWS_TOP = 34;
@@ -122,6 +122,11 @@ export interface Wire {
   count: number;
   lit: number;
   readonly methods: Set<string>;
+  readonly calls: Call[];
+}
+
+export function wireKey(wire: Pick<Wire, "sourcePort" | "targetPort">): string {
+  return `${wire.sourcePort}>${wire.targetPort}`;
 }
 
 /** The sheet as it is drawn now: which parts show rows, their ports, and one wire per pair of ports. */
@@ -173,16 +178,19 @@ export function drawing(sheet: Sheet, state: ViewState, functions: readonly Func
     ports.set(id, found);
     return found;
   };
-  const wire = (source: number, sourceMethod: string, target: number, targetMethod: string, count: number, lit: number): void => {
+  const wire = (source: number, sourceMethod: string, target: number, targetMethod: string, count: number, lit: number, call: Call | null): void => {
     const sourcePort = end(source, "e", sourceMethod, `c${target}`, lit);
     const targetPort = end(target, "w", targetMethod, `c${source}`, lit);
     port(source, "e", sourcePort);
     port(target, "w", targetPort);
-    const key = `${sourcePort}>${targetPort}`;
-    const found = wires.get(key) ?? { id: `w${wires.size}`, source, target, sourcePort, targetPort, count: 0, lit: 0, methods: new Set<string>() };
+    const key = wireKey({ sourcePort, targetPort });
+    const found = wires.get(key) ?? { id: `w${wires.size}`, source, target, sourcePort, targetPort, count: 0, lit: 0, methods: new Set<string>(), calls: [] };
     found.count += count;
     found.lit += lit;
     found.methods.add(targetMethod);
+    if (call !== null) {
+      found.calls.push(call);
+    }
     wires.set(key, found);
   };
   const flag = (info: PortInfo, key: string, count: number, lit: boolean): void => {
@@ -196,14 +204,14 @@ export function drawing(sheet: Sheet, state: ViewState, functions: readonly Func
   for (const call of sheet.calls) {
     const key = callKey(call.source, call.source_method, call.target, call.target_method);
     seen.add(key);
-    wire(call.source, call.source_method, call.target, call.target_method, call.count, facts?.calls.get(key) ?? 0);
+    wire(call.source, call.source_method, call.target, call.target_method, call.count, facts?.calls.get(key) ?? 0, call);
   }
   for (const [key, lit] of facts?.calls ?? []) {
     if (seen.has(key)) {
       continue;
     }
     const [source = "", sourceMethod = "", target = "", targetMethod = ""] = key.split("|");
-    wire(Number(source), sourceMethod, Number(target), targetMethod, 0, lit);
+    wire(Number(source), sourceMethod, Number(target), targetMethod, 0, lit, null);
   }
   for (const call of sheet.inbound) {
     const lit = facts?.inbound.has(`${call.sheet}|${call.target}|${call.target_method}`) ?? false;
