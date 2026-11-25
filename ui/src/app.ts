@@ -1,17 +1,29 @@
-import type { FlowPath, PartDetail, Sheet, SheetFlows, SheetIndex } from "./api.ts";
+import type {
+  ComparisonIndex,
+  FlowPath,
+  PartDetail,
+  Sheet,
+  SheetComparison,
+  SheetFlows,
+  SheetIndex,
+  State,
+  StateList,
+} from "./api.ts";
 import { fetchJson } from "./api.ts";
 import { Inspector } from "./inspector.ts";
 import type { PanelContext } from "./inspector.ts";
 import { LayoutEngine } from "./layout.ts";
-import { Theme } from "./theme.ts";
+import { Panels } from "./panels.ts";
 import type { Drawing, Grouping, Point, ViewState, Wire } from "./model.ts";
 import { at, drawing, elkGraph, wireKey } from "./model.ts";
 import { readableTest } from "./names.ts";
+import { Theme } from "./theme.ts";
 import { SheetView } from "./view.ts";
 import type { Selection } from "./view.ts";
 import { Viewport } from "./viewport.ts";
 
 const GROUPINGS: readonly Grouping[] = ["none", "role", "file", "service"];
+const NO_FLOWS: SheetFlows = { functions: [], flows: [] };
 
 function byId<T extends Element>(id: string, kind: { new (): T; prototype: T }): T {
   const found = document.getElementById(id);
@@ -30,7 +42,11 @@ function html<K extends keyof HTMLElementTagNameMap>(name: K, text = "", classNa
   return node;
 }
 
-/** The page: picks the sheet, the flow, the grouping and the expanded parts, and has the sheet laid out and drawn. */
+function part(value: string): string {
+  return encodeURIComponent(value);
+}
+
+/** The page: picks the states, the sheet, the flow, the grouping and the expanded parts, and has the sheet drawn. */
 class App {
   private readonly svg = byId("drawing", SVGSVGElement);
   private readonly stage = byId("stage", HTMLElement);
@@ -38,10 +54,12 @@ class App {
   private readonly flowList = byId("flows", HTMLDivElement);
   private readonly filter = byId("filter", HTMLInputElement);
   private readonly crumbs = byId("crumbs", HTMLElement);
-  private readonly figures = byId("figures", HTMLDivElement);
+  private readonly titleBlock = byId("title-block", HTMLDivElement);
   private readonly sheetControls = byId("sheet-controls", HTMLDivElement);
   private readonly clearFlow = byId("clear-flow", HTMLButtonElement);
   private readonly notice = byId("notice", HTMLParagraphElement);
+  private readonly headSelect = byId("head", HTMLSelectElement);
+  private readonly baseSelect = byId("base", HTMLSelectElement);
   private readonly engine = new LayoutEngine();
   private readonly viewport = new Viewport(this.svg, this.stage);
   private readonly view = new SheetView(this.svg, {
@@ -51,16 +69,36 @@ class App {
     dragging: () => this.viewport.dragging,
   });
   private readonly inspector = new Inspector(byId("inspector", HTMLDivElement), {
-    open: (sheetId) => void this.open(sheetId).catch((error: unknown) => this.fail(error)),
+    open: (sheetId) => this.go(this.open(sheetId)),
     selectPart: (index) => this.select({ part: index }),
     toggle: (index) => this.toggle(index),
     clearFlow: () => this.chooseFlow(null),
   });
+  private readonly panels = new Panels(
+    document.body,
+    {
+      buttons: { rail: byId("toggle-rail", HTMLButtonElement), side: byId("toggle-side", HTMLButtonElement) },
+      panels: { rail: byId("rail", HTMLElement), side: byId("side", HTMLElement) },
+      handles: { rail: byId("resize-rail", HTMLDivElement), side: byId("resize-side", HTMLDivElement) },
+    },
+    {
+      moved: (name, dx) => {
+        if (name === "rail") {
+          this.viewport.pan(-dx);
+        }
+      },
+    },
+  );
   private readonly theme = new Theme(document.documentElement, [...document.querySelectorAll<HTMLButtonElement>("[data-theme-choice]")]);
   private readonly expanded = new Set<number>();
+  private states: StateList = { current: "", states: [] };
+  private head = "";
+  private base: string | null = null;
   private index: SheetIndex | null = null;
+  private changes: ComparisonIndex | null = null;
   private sheet: Sheet | null = null;
-  private flows: SheetFlows = { functions: [], flows: [] };
+  private comparison: SheetComparison | null = null;
+  private flows: SheetFlows = NO_FLOWS;
   private grouping: Grouping = "none";
   private flow: FlowPath | null = null;
   private placed = new Map<string, Point>();
@@ -90,17 +128,41 @@ class App {
     byId("zoom-fit", HTMLButtonElement).addEventListener("click", () => void this.relayout(true));
     this.clearFlow.addEventListener("click", () => this.chooseFlow(null));
     this.filter.addEventListener("input", () => this.renderFlows());
+    this.headSelect.addEventListener("change", () => {
+      this.head = this.headSelect.value;
+      this.base = this.base === this.head ? null : this.base;
+      this.go(this.reload());
+    });
+    this.baseSelect.addEventListener("change", () => {
+      this.base = this.baseSelect.value || null;
+      this.go(this.reload());
+    });
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && !(event.target instanceof HTMLInputElement)) {
+      const typing = event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement;
+      if (typing || event.metaKey || event.ctrlKey || event.altKey) {
+        return;
+      }
+      if (event.key === "Escape") {
         this.select(null);
+      }
+      if (event.key === "[") {
+        this.panels.toggle("rail");
+      }
+      if (event.key === "]") {
+        this.panels.toggle("side");
       }
     });
   }
 
   async start(): Promise<void> {
-    this.index = await fetchJson<SheetIndex>("/api/sheets");
+    this.states = await fetchJson<StateList>("/api/states");
     const hash = new URLSearchParams(location.hash.slice(1));
-    await this.open(hash.get("sheet") ?? this.index.overview, hash);
+    const known = (id: string | null): string | null => (id !== null && this.states.states.some((s) => s.id === id) ? id : null);
+    this.head = known(hash.get("head")) ?? this.states.current;
+    this.base = known(hash.get("base"));
+    this.renderStates();
+    await this.loadIndex();
+    await this.open(hash.get("sheet") ?? this.index?.overview ?? "", hash);
   }
 
   fail(error: unknown): void {
@@ -108,15 +170,45 @@ class App {
     this.notice.hidden = false;
   }
 
+  private go(work: Promise<void>): void {
+    work.catch((error: unknown) => this.fail(error));
+  }
+
   private get overview(): boolean {
     return this.sheet !== null && this.sheet.id === this.index?.overview;
   }
 
+  private state(id: string | null): State | null {
+    return this.states.states.find((found) => found.id === id) ?? null;
+  }
+
+  private async reload(): Promise<void> {
+    this.renderStates();
+    const shown = this.sheet?.id;
+    await this.loadIndex();
+    const sheets = this.changes?.sheets ?? this.index?.sheets ?? [];
+    await this.open(shown !== undefined && sheets.some((found) => found.id === shown) ? shown : (this.index?.overview ?? ""));
+  }
+
+  private async loadIndex(): Promise<void> {
+    const head = part(this.head);
+    this.index = await fetchJson<SheetIndex>(`/api/states/${head}/sheets`);
+    this.changes = this.base === null ? null : await fetchJson<ComparisonIndex>(`/api/compare/${part(this.base)}/${head}`);
+  }
+
   private async open(sheetId: string, hash: URLSearchParams | null = null): Promise<void> {
-    const path = `/api/sheets/${encodeURIComponent(sheetId)}`;
-    const [sheet, flows] = await Promise.all([fetchJson<Sheet>(path), fetchJson<SheetFlows>(`${path}/flows`)]);
-    this.sheet = sheet;
-    this.flows = flows;
+    const head = part(this.head);
+    const inHead = this.index?.sheets.some((found) => found.id === sheetId) ?? false;
+    if (this.base === null) {
+      this.comparison = null;
+      this.sheet = await fetchJson<Sheet>(`/api/states/${head}/sheets/${part(sheetId)}`);
+    } else {
+      this.comparison = await fetchJson<SheetComparison>(`/api/compare/${part(this.base)}/${head}/sheets/${part(sheetId)}`);
+      this.sheet = this.comparison.sheet;
+    }
+    const recorded = this.state(this.head)?.flows ?? false;
+    this.flows = recorded && inHead ? await fetchJson<SheetFlows>(`/api/states/${head}/sheets/${part(sheetId)}/flows`) : NO_FLOWS;
+    const sheet = this.sheet;
     this.expanded.clear();
     this.flow = null;
     this.placed = new Map();
@@ -125,13 +217,13 @@ class App {
     if (hash !== null) {
       this.grouping = GROUPINGS.find((grouping) => grouping === hash.get("group")) ?? this.grouping;
       for (const title of (hash.get("expand") ?? "").split(",").filter(Boolean)) {
-        const index = sheet.parts.findIndex((part) => part.title === title);
+        const index = sheet.parts.findIndex((found) => found.title === title);
         if (index >= 0) {
           this.expanded.add(index);
         }
       }
       const wanted = hash.get("flow");
-      this.flow = wanted === null ? null : flows.flows.find((flow) => flow.test.includes(wanted)) ?? null;
+      this.flow = wanted === null ? null : (this.flows.flows.find((flow) => flow.test.includes(wanted)) ?? null);
     }
     this.renderSheets();
     this.renderCrumbs();
@@ -146,22 +238,21 @@ class App {
       return;
     }
     const run = ++this.run;
-    this.svg.classList.add("busy");
+    this.stage.classList.add("busy");
     const state: ViewState = { grouping: this.overview ? "none" : this.grouping, expanded: this.expanded, flow: this.flow };
-    const d = drawing(sheet, state, this.flows.functions);
-    const started = performance.now();
+    const d = drawing(sheet, state, this.flows.functions, this.comparison);
     const layout = await this.engine.arrange(elkGraph(d, state, this.placed));
     if (run !== this.run) {
       return;
     }
-    this.svg.classList.remove("busy");
+    this.stage.classList.remove("busy");
     this.viewport.attach(this.view.draw(d, layout, this.placed));
     if (fit) {
       this.viewport.fit(layout.width, layout.height);
     }
     this.placed = new Map([...layout.parts].map(([index, placed]) => [at(sheet.parts, index).id, { x: placed.x, y: placed.y }]));
     this.current = d;
-    this.renderFigures(d, layout.parts.size, Math.round(performance.now() - started));
+    this.renderTitleBlock(d, layout.parts.size);
     this.renderPanel();
     this.writeHash();
   }
@@ -183,21 +274,30 @@ class App {
     const index = this.index;
     const sheet = this.sheet;
     const d = this.current;
-    if (index === null || sheet === null || d === null) {
+    const head = this.state(this.head);
+    if (index === null || sheet === null || d === null || head === null) {
       return;
     }
-    const context: PanelContext = { index, sheet, drawing: d, flow: this.flow, flows: this.flows.flows.length, expanded: this.expanded };
+    const context: PanelContext = {
+      index,
+      sheet,
+      drawing: d,
+      flow: this.flow,
+      flows: this.flows.flows.length,
+      expanded: this.expanded,
+      comparison: this.comparison,
+      base: this.state(this.base),
+      head,
+    };
     const selection = this.selection;
     const asked = ++this.asked;
     if (selection !== null && "part" in selection) {
-      this.inspector.showPart(context, selection.part, null);
-      fetchJson<PartDetail>(`/api/sheets/${encodeURIComponent(sheet.id)}/parts/${selection.part}`)
-        .then((detail) => {
-          if (asked === this.asked) {
-            this.inspector.showPart(context, selection.part, detail);
-          }
-        })
-        .catch((error: unknown) => this.fail(error));
+      this.inspector.showPart(context, selection.part, null, null);
+      this.go(this.details(selection.part).then(([detail, before]) => {
+        if (asked === this.asked) {
+          this.inspector.showPart(context, selection.part, detail, before);
+        }
+      }));
       return;
     }
     const wire: Wire | undefined = selection !== null && "wire" in selection ? d.wires.find((w) => wireKey(w) === selection.wire) : undefined;
@@ -212,13 +312,23 @@ class App {
     this.inspector.showSheet(context);
   }
 
+  /** The details of a part from the state that has it, and from the base state when it changed there. */
+  private async details(index: number): Promise<[PartDetail, PartDetail | null]> {
+    const id = part(at(this.sheet?.parts ?? [], index).id);
+    const status = this.comparison?.parts[index]?.status ?? "same";
+    const shownIn = status === "removed" && this.base !== null ? this.base : this.head;
+    const detail = fetchJson<PartDetail>(`/api/states/${part(shownIn)}/parts/${id}`);
+    const before = status === "changed" && this.base !== null ? fetchJson<PartDetail>(`/api/states/${part(this.base)}/parts/${id}`) : Promise.resolve(null);
+    return Promise.all([detail, before]);
+  }
+
   private onPart(index: number): void {
-    const part = this.sheet === null ? undefined : this.sheet.parts[index];
-    if (part === undefined) {
+    const found = this.sheet?.parts[index];
+    if (found === undefined) {
       return;
     }
-    if (part.kind === "package") {
-      void this.open(part.id).catch((error: unknown) => this.fail(error));
+    if (found.kind === "package") {
+      this.go(this.open(found.id));
       return;
     }
     this.selection = { part: index };
@@ -232,13 +342,31 @@ class App {
     void this.relayout(false);
   }
 
+  private renderStates(): void {
+    const option = (value: string, label: string, title: string): HTMLOptionElement => {
+      const found = html("option", label);
+      found.value = value;
+      found.title = title;
+      return found;
+    };
+    this.headSelect.replaceChildren(...this.states.states.map((s) => option(s.id, s.label, s.subject)));
+    this.headSelect.value = this.head;
+    this.baseSelect.replaceChildren(
+      option("", "none", ""),
+      ...this.states.states.filter((s) => s.id !== this.head).map((s) => option(s.id, s.label, s.subject)),
+    );
+    this.baseSelect.value = this.base ?? "";
+  }
+
   private renderSheets(): void {
     this.sheetList.textContent = "";
-    for (const summary of this.index?.sheets ?? []) {
+    const rows = this.changes?.sheets.map((found) => ({ id: found.id, title: found.title, count: found.changes ? String(found.changes) : "", status: found.status }))
+      ?? (this.index?.sheets ?? []).map((found) => ({ id: found.id, title: found.title, count: String(found.parts), status: "same" }));
+    for (const row of rows) {
       const button = html("button");
-      button.setAttribute("aria-current", String(summary.id === this.sheet?.id));
-      button.append(html("span", summary.title), html("span", String(summary.parts), "count"));
-      button.addEventListener("click", () => void this.open(summary.id).catch((error: unknown) => this.fail(error)));
+      button.setAttribute("aria-current", String(row.id === this.sheet?.id));
+      button.append(html("span", row.title, `name ${row.status}`), html("span", row.count, `count ${row.status}`));
+      button.addEventListener("click", () => this.go(this.open(row.id)));
       const item = html("li");
       item.append(button);
       this.sheetList.append(item);
@@ -249,7 +377,7 @@ class App {
     this.crumbs.textContent = "";
     const project = this.index?.project ?? "";
     const home = html("button", project, this.overview ? "here" : "");
-    home.addEventListener("click", () => void this.open(this.index?.overview ?? project).catch((error: unknown) => this.fail(error)));
+    home.addEventListener("click", () => this.go(this.open(this.index?.overview ?? project)));
     this.crumbs.append(home);
     if (!this.overview && this.sheet !== null) {
       this.crumbs.append(html("span", "/", "sep"), html("span", this.sheet.title, "here"));
@@ -280,7 +408,11 @@ class App {
       const details = html("details");
       details.open = query !== "" || flows.some((flow) => flow === this.flow);
       const summary = html("summary");
-      summary.append(html("span", file), html("span", String(flows.length)));
+      const name = html("span", "", "file");
+      const slash = file.lastIndexOf("/");
+      name.append(html("span", file.slice(0, slash + 1), "folder"), html("span", file.slice(slash + 1).replace(/^test_/, "").replace(/\.py$/, ""), "stem"));
+      name.title = file;
+      summary.append(name, html("span", String(flows.length), "tally"));
       const list = html("ul");
       for (const flow of flows) {
         const words = flow.name === flow.test ? readableTest(flow.test) : { name: flow.name, param: "" };
@@ -298,23 +430,45 @@ class App {
       this.flowList.append(details);
     }
     if (this.flows.flows.length === 0) {
-      this.flowList.append(html("p", "No flows recorded: run schematic record.", "empty"));
+      const recorded = this.state(this.head)?.flows ?? false;
+      this.flowList.append(html("p", recorded ? "No flow runs on this sheet." : `No flows recorded for ${this.state(this.head)?.label ?? "this state"}.`, "empty"));
     }
   }
 
-  private renderFigures(d: Drawing, parts: number, milliseconds: number): void {
-    this.figures.textContent = "";
-    const rows: [string, string][] = [
-      [String(parts), "parts"],
-      [String(d.wires.length), "wires"],
-      [String(this.expanded.size), "expanded"],
-      [`${milliseconds} ms`, "layout"],
-    ];
-    for (const [value, label] of rows) {
-      const span = html("span");
-      span.append(html("b", value), ` ${label}`);
-      this.figures.append(span);
+  /** The title block: what this sheet is, which states it shows, and what it holds. */
+  private renderTitleBlock(d: Drawing, parts: number): void {
+    const sheet = this.sheet;
+    const head = this.state(this.head);
+    if (sheet === null || head === null) {
+      return;
     }
+    const base = this.state(this.base);
+    const sheets = this.index?.sheets ?? [];
+    const number = Math.max(1, sheets.findIndex((found) => found.id === sheet.id) + 1);
+    const changed = this.comparison === null ? 0 : [...this.comparison.parts.map((p) => p.status), ...this.comparison.calls].filter((s) => s !== "same").length;
+    const flow = this.flow;
+    const cell = (key: string, value: string, className = "", valueClass = ""): HTMLDivElement => {
+      const found = html("div", "", `cell ${className}`);
+      found.append(html("span", key, "key"), html("span", value, `value ${valueClass}`));
+      return found;
+    };
+    const title = this.overview ? (this.index?.project ?? sheet.title) : `${this.index?.project ?? ""} / ${sheet.title}`;
+    const rows: HTMLDivElement[][] = [
+      [cell("Sheet", title, "double", "title"), cell("Sheet", `${number} of ${sheets.length}`)],
+      base === null
+        ? [cell("State", head.label), cell("Parts", String(parts)), cell("Wires", String(d.wires.length))]
+        : [cell("State", head.label), cell("Compared with", base.label), cell("Changes", String(changed), "", changed ? "changed" : "")],
+    ];
+    if (flow !== null) {
+      rows.push([cell("Flow", readableTest(flow.test).name, "double", "current"), cell("Calls", String(d.wires.reduce((sum, w) => sum + w.lit, 0)), "", "current")]);
+    }
+    rows.forEach((row, r) => {
+      row.at(-1)?.classList.add("end");
+      for (const found of row) {
+        found.classList.toggle("last-row", r === rows.length - 1);
+      }
+    });
+    this.titleBlock.replaceChildren(...rows.flat());
   }
 
   private writeHash(): void {
@@ -323,6 +477,12 @@ class App {
       return;
     }
     const params = new URLSearchParams({ sheet: sheet.id });
+    if (this.head !== this.states.current) {
+      params.set("head", this.head);
+    }
+    if (this.base !== null) {
+      params.set("base", this.base);
+    }
     if (this.grouping !== "none") {
       params.set("group", this.grouping);
     }

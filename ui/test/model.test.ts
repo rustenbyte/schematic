@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { FlowPath, FunctionRef, Sheet } from "../src/api.ts";
-import { OTHER, ROWS_TOP, ROW, drawing, elkGraph } from "../src/model.ts";
+import type { FlowPath, FunctionRef, Sheet, SheetComparison } from "../src/api.ts";
+import { OTHER, ROWS_TOP, ROW, at, combine, drawing, elkGraph } from "../src/model.ts";
 import type { Drawing, ViewState } from "../src/model.ts";
 
 const SHEET: Sheet = {
@@ -21,9 +21,9 @@ const SHEET: Sheet = {
   outbound: [{ source: 1, source_method: "write", target: "library:pyoxigraph", count: 1 }],
 };
 const FUNCTIONS: FunctionRef[] = [
-  { sheet: "store", part: 0, method: "run" },
-  { sheet: "store", part: 1, method: "read" },
-  { sheet: "store", part: 2, method: "helper" },
+  { sheet: "store", part: "shop.store.Orders", method: "run" },
+  { sheet: "store", part: "shop.store.Ledger", method: "read" },
+  { sheet: "store", part: "shop.store.rules", method: "helper" },
 ];
 const FLOW: FlowPath = {
   test: "tests/test_store.py::test_an_order_reads_the_ledger",
@@ -49,8 +49,8 @@ test("collapsed parts have one wire per pair, with a port per neighbour", () => 
 
 test("calls from and to other sheets are flags on their own ports", () => {
   const d = drawing(SHEET, state(), FUNCTIONS);
-  assert.deepEqual([...(d.sides[0]?.west.get("0|w|p:app")?.flags ?? [])], [["app", { count: 1, lit: false }]]);
-  assert.deepEqual([...(d.sides[1]?.east.get("1|e|k:library:pyoxigraph")?.flags ?? [])], [["library:pyoxigraph", { count: 1, lit: false }]]);
+  assert.deepEqual([...(d.sides[0]?.west.get("0|w|p:app")?.flags ?? [])], [["app", { count: 1, lit: false, statuses: ["same"] }]]);
+  assert.deepEqual([...(d.sides[1]?.east.get("1|e|k:library:pyoxigraph")?.flags ?? [])], [["library:pyoxigraph", { count: 1, lit: false, statuses: ["same"] }]]);
 });
 
 test("an expanded part shows its methods as rows and takes each call at its method", () => {
@@ -91,4 +91,25 @@ test("grouping by role puts each part in its role's frame, in the order services
 test("a wire knows the calls it carries, so the panel can list them", () => {
   const d = drawing(SHEET, state(), FUNCTIONS);
   assert.deepEqual(d.wires[0]?.calls.map((call) => `${call.source_method}>${call.target_method} ${call.lines.join(",")}`), ["run>read 4,6", "run>write 7"]);
+});
+
+test("in a comparison a wire takes the status of its calls, and changed when they differ", () => {
+  const comparison: SheetComparison = {
+    base: "v1",
+    head: "v2",
+    sheet: SHEET,
+    parts: SHEET.parts.map(() => ({ status: "same", methods: {}, doc: false, changes: 0 })),
+    calls: ["added", "removed", "added"],
+    inbound: ["removed"],
+    outbound: ["same"],
+  };
+  const d = drawing(SHEET, state(), FUNCTIONS, comparison);
+  assert.deepEqual(d.wires.map((w) => combine(w.statuses)), ["changed", "added"]);
+  assert.deepEqual(d.sides[0]?.west.get("0|w|p:app")?.flags.get("app")?.statuses, ["removed"]);
+});
+
+test("a flow finds its parts by id, so it also fits a sheet merged from two states", () => {
+  const merged: Sheet = { ...SHEET, parts: [{ ...at(SHEET.parts, 2), id: "shop.store.gone" }, ...SHEET.parts] };
+  const d = drawing(merged, state({ flow: FLOW }), FUNCTIONS);
+  assert.deepEqual([...(d.facts?.rows.keys() ?? [])], [1, 2, 3]);
 });

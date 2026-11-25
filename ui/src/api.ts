@@ -88,8 +88,54 @@ export interface PartDetail {
 
 export interface FunctionRef {
   readonly sheet: string;
-  readonly part: number;
+  readonly part: string;
   readonly method: string;
+}
+
+export type Status = "same" | "added" | "removed" | "changed";
+
+export interface State {
+  readonly id: string;
+  readonly label: string;
+  readonly subject: string;
+  readonly date: string;
+  readonly flows: boolean;
+}
+
+export interface StateList {
+  readonly current: string;
+  readonly states: readonly State[];
+}
+
+export interface PartChange {
+  readonly status: Status;
+  readonly methods: Readonly<Record<string, Status>>;
+  readonly doc: boolean;
+  readonly changes: number;
+}
+
+export interface SheetComparison {
+  readonly base: string;
+  readonly head: string;
+  readonly sheet: Sheet;
+  readonly parts: readonly PartChange[];
+  readonly calls: readonly Status[];
+  readonly inbound: readonly Status[];
+  readonly outbound: readonly Status[];
+}
+
+export interface SheetChanges {
+  readonly id: string;
+  readonly title: string;
+  readonly status: Status;
+  readonly changes: number;
+}
+
+export interface ComparisonIndex {
+  readonly base: string;
+  readonly head: string;
+  readonly overview: string;
+  readonly sheets: readonly SheetChanges[];
 }
 
 export interface FlowPath {

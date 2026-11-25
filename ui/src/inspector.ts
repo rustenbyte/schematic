@@ -1,6 +1,6 @@
-import type { FlowPath, Part, PartDetail, Sheet, SheetIndex } from "./api.ts";
+import type { FlowPath, Part, PartDetail, Sheet, SheetComparison, SheetIndex, State, Status } from "./api.ts";
 import type { Drawing, Wire } from "./model.ts";
-import { at, flagLabel } from "./model.ts";
+import { at, combine, flagLabel, reference } from "./model.ts";
 import { readableTest, relativePath, shortName } from "./names.ts";
 
 export interface PanelContext {
@@ -10,6 +10,16 @@ export interface PanelContext {
   readonly flow: FlowPath | null;
   readonly flows: number;
   readonly expanded: ReadonlySet<number>;
+  readonly comparison: SheetComparison | null;
+  readonly base: State | null;
+  readonly head: State;
+}
+
+const STATUS_NAMES: Readonly<Record<Status, string>> = { same: "", added: "Added", removed: "Removed", changed: "Changed" };
+
+function count(statuses: readonly Status[], wanted: Status): Fact {
+  const found = statuses.filter((status) => status === wanted).length;
+  return [STATUS_NAMES[wanted], String(found), found ? wanted : ""];
 }
 
 export interface PanelEvents {
@@ -27,6 +37,13 @@ const ROLE_NAMES: Readonly<Record<string, string>> = {
 };
 
 type Content = Node | string | null;
+
+interface Mark {
+  readonly text: string;
+  readonly kind?: string;
+}
+
+type Fact = readonly [string, string] | readonly [string, string, string];
 
 function node<K extends keyof HTMLElementTagNameMap>(name: K, children: readonly Content[] = [], className = ""): HTMLElementTagNameMap[K] {
   const found = document.createElement(name);
@@ -97,7 +114,21 @@ export class Inspector {
           ["Libraries", String(libraries.size)],
           ["Flows", String(c.flows)],
         ];
-    this.replace(this.head(["Sheet"], overview ? c.index.project : sheet.title, overview ? c.index.root : null), this.facts(rows));
+    const comparison = c.comparison;
+    const title = overview ? c.index.project : sheet.title;
+    if (comparison === null || c.base === null) {
+      this.replace(this.head([{ text: overview ? "Overview" : "Sheet" }, { text: c.head.label }], title, null), this.section("On this sheet", this.facts(rows)));
+      return;
+    }
+    const parts = comparison.parts.map((part) => part.status);
+    const flags = [...comparison.inbound, ...comparison.outbound];
+    const kinds: readonly Status[] = ["added", "removed", "changed"];
+    this.replace(
+      this.head([{ text: overview ? "Overview" : "Sheet" }, { text: `${c.base.label} to ${c.head.label}`, kind: "changed" }], title, null),
+      this.section("Parts", this.facts(kinds.map((kind) => count(parts, kind)))),
+      this.section("Calls inside", this.facts(kinds.map((kind) => count(comparison.calls, kind)))),
+      this.section("Calls with other sheets and libraries", this.facts(kinds.map((kind) => count(flags, kind)))),
+    );
   }
 
   showFlow(c: PanelContext, flow: FlowPath): void {
@@ -109,24 +140,27 @@ export class Inspector {
       return `${at(c.sheet.parts, Number(part)).title}${method ? `.${method}` : ""}`;
     });
     this.replace(
-      this.head(["Flow", flow.outcome], words.param ? `${words.name} (${words.param})` : words.name, node("code", [flow.test])),
-      this.facts([
+      this.head([{ text: "Flow" }, { text: flow.outcome, kind: flow.outcome === "passed" ? "current" : "failed" }], words.param ? `${words.name} (${words.param})` : words.name, node("code", [flow.test])),
+      this.section("On this sheet", this.facts([
         ["Parts it ran", String(facts?.rows.size ?? 0)],
-        ["Calls on this sheet", String([...(facts?.calls.values() ?? [])].reduce((sum, n) => sum + n, 0))],
-      ]),
+        ["Calls between them", String([...(facts?.calls.values() ?? [])].reduce((sum, n) => sum + n, 0))],
+      ])),
       entries.length ? this.section("Entered at", this.list(entries.map((entry) => [entry]))) : null,
       raised.length ? this.section("Raises", this.list(raised.map((name) => [name]), "fault-list")) : null,
-      node("div", [this.button("Clear flow", () => this.events.clearFlow(), "ghost")], "actions"),
+      node("div", [this.button("Clear flow", () => this.events.clearFlow(), "button")], "actions"),
     );
   }
 
-  showPart(c: PanelContext, index: number, detail: PartDetail | null): void {
+  showPart(c: PanelContext, index: number, detail: PartDetail | null, before: PartDetail | null): void {
     const part = at(c.sheet.parts, index);
     const project = c.index.project;
     const where = detail?.line ?? null;
+    const change = c.comparison?.parts[index];
+    const status: Mark[] = change && change.status !== "same" ? [{ text: STATUS_NAMES[change.status], kind: change.status }] : [];
     this.replace(
-      this.head([ROLE_NAMES[part.role] ?? part.role], part.title, part.path ? this.link(c, part.path, where) : null),
+      this.head([{ text: reference(part, index), kind: "ref" }, { text: ROLE_NAMES[part.role] ?? part.role }, ...status], part.title, part.path ? this.link(c, part.path, where) : null),
       detail?.doc ? prose(detail.doc) : null,
+      this.changes(c, index, before),
       detail && detail.kinds.length ? node("div", detail.kinds.map((kind) => node("span", [kind], "tag")), "tags") : null,
       detail && detail.implements.length ? this.section("Implements", this.list(detail.implements.map((name) => [shortName(project, name)]))) : null,
       detail && detail.built_with.length
@@ -139,27 +173,53 @@ export class Inspector {
       detail && detail.types.length ? this.section("Data types", this.list(detail.types.map((name) => [shortName(project, name)]))) : null,
       this.flowPart(c, index),
       node("div", [part.kind === "package"
-        ? this.button("Open sheet", () => this.events.open(part.id), "primary")
-        : this.button(c.expanded.has(index) ? "Collapse" : "Expand", () => this.events.toggle(index), "ghost")], "actions"),
+        ? this.button("Open sheet", () => this.events.open(part.id), "button primary")
+        : this.button(c.expanded.has(index) ? "Collapse" : "Expand", () => this.events.toggle(index), "button")], "actions"),
     );
   }
 
   showWire(c: PanelContext, wire: Wire): void {
     const source = at(c.sheet.parts, wire.source);
     const target = at(c.sheet.parts, wire.target);
-    const rows = wire.calls.map((call) => [
-      node("code", [call.source_method && call.target_method ? `${call.source_method} → ${call.target_method}` : `${source.title} → ${target.title}`]),
-      node("span", [call.lines.length ? "" : `×${call.count}`, ...call.lines.flatMap((line, i) => [i ? " " : "", this.link(c, source.path, line, `:${line}`)])], "n"),
-    ]);
+    const rows = wire.calls.map((call, i) => {
+      const status = wire.statuses[i] ?? "same";
+      return [
+        node("code", [`${status === "added" ? "+ " : status === "removed" ? "− " : ""}${call.source_method && call.target_method ? `${call.source_method} → ${call.target_method}` : `${source.title} → ${target.title}`}`], status),
+        node("span", [call.lines.length ? "" : `×${call.count}`, ...call.lines.flatMap((line, n) => [n ? " " : "", this.link(c, source.path, line, `:${line}`)])], "n"),
+      ];
+    });
+    const status = combine(wire.statuses);
+    const marks: Mark[] = [
+      { text: "Wire" },
+      ...(status !== "same" ? [{ text: STATUS_NAMES[status], kind: status }] : []),
+      ...(wire.lit > 0 ? [{ text: `${wire.lit} calls in this flow`, kind: "current" }] : []),
+    ];
     this.replace(
-      this.head(["Wire", ...(wire.lit > 0 ? [`${wire.lit} calls in this flow`] : [])], `${source.title} to ${target.title}`, null),
-      this.facts([["Calls", String(wire.calls.reduce((sum, call) => sum + call.count, 0))]]),
-      rows.length ? this.section("Calls", this.list(rows, "calls")) : node("p", ["Recorded in this flow; the scan does not resolve these calls."], "quiet"),
+      this.head(marks, `${source.title} to ${target.title}`, null),
+      rows.length
+        ? this.section(`Calls (${wire.calls.reduce((sum, call) => sum + call.count, 0)})`, this.list(rows, "calls"))
+        : node("p", ["Recorded in this flow; the scan does not resolve these calls."], "quiet"),
       node("div", [
-        this.button(source.title, () => this.events.selectPart(wire.source), "ghost"),
-        this.button(target.title, () => this.events.selectPart(wire.target), "ghost"),
+        this.button(`${reference(source, wire.source)} ${source.title}`, () => this.events.selectPart(wire.source), "button"),
+        this.button(`${reference(target, wire.target)} ${target.title}`, () => this.events.selectPart(wire.target), "button"),
       ], "actions"),
     );
+  }
+
+  private changes(c: PanelContext, index: number, before: PartDetail | null): HTMLElement | null {
+    const change = c.comparison?.parts[index];
+    if (change === undefined || change.status === "same" || c.base === null) {
+      return null;
+    }
+    const added = Object.entries(change.methods).filter(([, status]) => status === "added").map(([name]) => [node("code", [`+ ${name}`], "added")]);
+    const removed = Object.entries(change.methods).filter(([, status]) => status === "removed").map(([name]) => [node("code", [`− ${name}`], "removed")]);
+    const body = node("div", [
+      change.status === "added" ? node("p", [`Not in ${c.base.label}.`], "quiet") : null,
+      change.status === "removed" ? node("p", [`Not in ${c.head.label}; the details are from ${c.base.label}.`], "quiet") : null,
+      added.length || removed.length ? this.list([...added, ...removed], "chips") : null,
+      change.doc ? node("div", [node("h4", [`Docstring in ${c.base.label}`]), before?.doc ? prose(before.doc) : node("p", ["None"], "quiet")], "before") : null,
+    ]);
+    return this.section(`Changes since ${c.base.label}`, body);
   }
 
   private connections(c: PanelContext, index: number, part: Part): HTMLElement | null {
@@ -206,9 +266,9 @@ export class Inspector {
     return this.section("In this flow", this.list([...methods].filter(Boolean).map((method) => [node("code", [method])])));
   }
 
-  private head(kicker: readonly string[], title: string, sub: Content): HTMLElement {
+  private head(marks: readonly Mark[], title: string, sub: Content): HTMLElement {
     return node("div", [
-      node("div", kicker.map((word) => node("span", [word])), "kicker"),
+      node("div", marks.map((mark) => node("span", [mark.text], `mark-chip ${mark.kind ?? ""}`)), "marks"),
       node("h1", [title]),
       sub === null ? null : node("div", [sub], "path"),
     ], "head");
@@ -218,8 +278,8 @@ export class Inspector {
     return node("section", [node("h3", [title]), body]);
   }
 
-  private facts(rows: readonly (readonly [string, string])[]): HTMLElement {
-    return node("section", [node("dl", rows.flatMap(([term, value]) => [node("dt", [term]), node("dd", [value])]), "facts")]);
+  private facts(rows: readonly Fact[]): HTMLElement {
+    return node("dl", rows.flatMap(([term, value, kind]) => [node("dt", [term]), node("dd", [value], kind ?? "")]), "facts");
   }
 
   private list(rows: readonly Content[][], className = ""): HTMLElement {

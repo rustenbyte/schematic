@@ -40,11 +40,21 @@ export class Viewport {
     this.apply();
   }
 
+  /** Fit the sheet into the stage, clear of the toolbars above it and the title block below it. */
   fit(width: number, height: number): void {
     const box = this.stage.getBoundingClientRect();
-    this.k = Math.min(box.width / (width + 40), box.height / (height + 40), 1.2);
-    this.x = (box.width - width * this.k) / 2;
-    this.y = (box.height - height * this.k) / 2;
+    const room = { top: 64, right: 18, bottom: 96, left: 18 };
+    const across = box.width - room.left - room.right;
+    const down = box.height - room.top - room.bottom;
+    this.k = Math.max(0.05, Math.min(across / width, down / height, 1.2));
+    this.x = room.left + (across - width * this.k) / 2;
+    this.y = room.top + (down - height * this.k) / 2;
+    this.apply();
+  }
+
+  /** Move the drawing on screen, as when the stage's left edge moves and the drawing should stay where it was. */
+  pan(dx: number): void {
+    this.x += dx;
     this.apply();
   }
 

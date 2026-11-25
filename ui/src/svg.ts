@@ -20,3 +20,14 @@ export function text(parent: Element, x: number, y: number, value: string, class
 export function path(sections: readonly (readonly { readonly x: number; readonly y: number }[])[]): string {
   return sections.map((section) => `M${section.map((p) => `${p.x} ${p.y}`).join("L")}`).join("");
 }
+
+/** A revision cloud: the scalloped outline a drawing puts round what changed, bulging outward on every side. */
+export function cloud(x: number, y: number, width: number, height: number, radius: number): string {
+  const across = Math.max(1, Math.round(width / (2 * radius)));
+  const down = Math.max(1, Math.round(height / (2 * radius)));
+  const step = width / across;
+  const drop = height / down;
+  const arcs = (count: number, size: number, dx: number, dy: number): string =>
+    Array.from({ length: count }, () => `a${size / 2} ${size / 2} 0 0 1 ${dx} ${dy}`).join("");
+  return `M${x} ${y}${arcs(across, step, step, 0)}${arcs(down, drop, 0, drop)}${arcs(across, step, -step, 0)}${arcs(down, drop, 0, -drop)}Z`;
+}
