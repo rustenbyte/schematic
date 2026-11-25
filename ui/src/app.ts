@@ -1,6 +1,7 @@
 import type { FlowPath, Sheet, SheetFlows, SheetIndex } from "./api.ts";
 import { fetchJson } from "./api.ts";
 import { LayoutEngine } from "./layout.ts";
+import { Theme } from "./theme.ts";
 import type { Drawing, Grouping, Point, ViewState } from "./model.ts";
 import { at, drawing, elkGraph } from "./model.ts";
 import { SheetView } from "./view.ts";
@@ -49,6 +50,7 @@ class App {
   private readonly engine = new LayoutEngine();
   private readonly viewport = new Viewport(this.svg, this.stage);
   private readonly view = new SheetView(this.svg, { part: (index) => this.onPart(index), dragging: () => this.viewport.dragging });
+  private readonly theme = new Theme(document.documentElement, [...document.querySelectorAll<HTMLButtonElement>("[data-theme-choice]")]);
   private readonly expanded = new Set<number>();
   private index: SheetIndex | null = null;
   private sheet: Sheet | null = null;

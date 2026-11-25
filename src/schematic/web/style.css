@@ -12,6 +12,23 @@
   --current-halo: rgba(11, 155, 230, 0.26);
   --current-soft: rgba(11, 155, 230, 0.10);
   --fault: #D0392B;
+  --group: rgba(255, 255, 255, 0.28);
+}
+:root[data-theme="blueprint"] {
+  --film: #0E2A44;
+  --film-deep: #0A2136;
+  --chip: #12324F;
+  --ink: #DCEBF7;
+  --ink-2: #8FB0CC;
+  --ink-3: #55779A;
+  --rule: #1F4365;
+  --grid-minor: rgba(196, 226, 255, 0.05);
+  --grid-major: rgba(196, 226, 255, 0.10);
+  --current: #4CC9FF;
+  --current-halo: rgba(76, 201, 255, 0.30);
+  --current-soft: rgba(76, 201, 255, 0.12);
+  --fault: #FF6B5B;
+  --group: rgba(196, 226, 255, 0.03);
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
@@ -94,7 +111,7 @@ button { cursor: pointer; }
 .paper { fill: var(--film); }
 .grid-minor { fill: none; stroke: var(--grid-minor); stroke-width: 0.6; }
 .grid-major { fill: none; stroke: var(--grid-major); stroke-width: 0.8; }
-.group { fill: rgba(255, 255, 255, 0.28); stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 7 4; }
+.group { fill: var(--group); stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 7 4; }
 .group-title { fill: var(--ink); font-size: 14px; font-stretch: expanded; font-weight: 680; letter-spacing: -0.01em; }
 .fade { opacity: 0; transition: opacity 220ms ease 240ms; }
 .fade.shown { opacity: 1; }
